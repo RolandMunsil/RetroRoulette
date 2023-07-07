@@ -7,6 +7,7 @@ using System.Linq;
 using System.Numerics;
 using System.Reflection;
 using System.Runtime.CompilerServices;
+using System.Runtime.Intrinsics.Arm;
 using System.Text.RegularExpressions;
 using System.Xml.Linq;
 using Veldrid;
@@ -35,15 +36,61 @@ namespace RetroRoulette
                 gameDetails = ROMNameParser.Parse(name);
             }
 
-            private string? GetPlayCommand()
+            private string[]? GetPlayCommand()
             {
                 return (folder.name, Ext) switch
                 {
-                    ("Gamecube", _) => $"\"C:\\Portable Programs\\Dolphin\\Dolphin.exe\" -e \"{path}\"",
-                    (_, ".rvz" or ".wbfs" or ".wad") => $"\"C:\\Portable Programs\\Dolphin\\Dolphin.exe\" -e \"{path}\"",
-                    ("Playstation 2", ".bin" or ".iso") => $"\"C:\\Program Files (x86)\\PCSX2\\pcsx2.exe\" \"{path}\"",
-                    ("Dreamcast", ".cue") => $"\"C:\\Portable Programs\\Flycast\\flycast.exe\" \"{path}\"",
-                    ("Xbox", ".iso") => $"\"C:\\Portable Programs\\Xemu\\xemu.exe\" \"{path}\"",
+                    // TODO: Game Master, GP32, Playstation Portable, Pokemon Mini, Tiger Game.com, Watara Supervision
+                    // TODO: LeapFrog Leapster? VTech V.Smile
+                    // TODO: Amiga CD32
+                    // TODO: Commodore CDTV, Funtech Super A'Can
+                    // TODO: Atari 7800, Philips Videopac+ G7400, Sega SG-1000, Super Casette Vision
+                    // TODO: 2nd Generation
+                    // TODO: Home Computers
+
+                    // TODO: Ooh old windows 98/95 games
+
+                    // TODO test all the systems
+                    // TODO list roms that weren't playable
+                    // TODO merge ROMs by name?
+
+                    ("Gamecube" or "Wii (Discs)" or "Wii (WiiWare)", ".rvz" or ".wbfs" or ".wad")
+                        => new[] { "C:\\Portable Programs\\Dolphin\\Dolphin.exe", "-e", path },
+                    ("Playstation 2", ".bin" or ".iso")
+                        => new[] { "C:\\Program Files (x86)\\PCSX2\\pcsx2.exe", path },
+                    ("Dreamcast", ".cue")
+                        => new[] { "C:\\Portable Programs\\Flycast\\flycast.exe", path },
+                    ("Xbox", ".iso")
+                        => new[] { "C:\\Portable Programs\\Xemu\\xemu.exe", path },
+                    // NOTE: sounds like Ares is also a good option for PC Engine?
+                    // NOTE: lynx roms need a BIOS? and also to be converted for mednafen?
+                    (_, ".vb" or ".pce" or ".lnx")
+                    or ("Sega Saturn" or "PlayStation", ".cue" or ".chd")
+                        => new[] { "C:\\Portable Programs\\Mednafen & Mednaffe\\mednafen.exe", path },
+                    ("Game Gear", ".sms" or ".gg")
+                        => new[] { "C:\\Portable Programs\\ares-v132\\ares.exe", "--system", "Game Gear", path },
+                    // NOTE: Genesis Plus GX or MAME(?) might have better support for Sega Master System games
+                    // NOTE: Blastem or Genesis Plus GX might provide better emulation of Mega Drive games
+                    (_, ".z64" or ".ndd" or ".sfc" or ".st" or ".bs" or ".32x" or ".sc" or ".ws" or ".wsc" or ".ngc" or ".ngp") 
+                    or ("Sega Master System", ".sms")
+                    or ("Sega CD", ".cue")
+                    or (not "Sega PICO", ".md")
+                        => new[] { "C:\\Portable Programs\\ares-v132\\ares.exe", path },
+                    (_, ".j64")
+                        => new[] { "C:\\Portable Programs\\BigPEmu\\BigPEmu.exe", path },
+                    (_, ".nes" or ".fds")
+                        => new[] { "C:\\Portable Programs\\Mesen\\Mesen.exe", path },
+                    (_, ".gb" or ".gbc")
+                        => new[] { "C:\\Portable Programs\\SameBoy\\sameboy.exe", path },
+                    (_, ".gba")
+                        => new[] { "C:\\Portable Programs\\mGBA\\mGBA.exe", path },
+                    ("CD-i", ".chd")
+                        => new[] { "C:\\Portable Programs\\MAME\\mame.exe", "cdimono1", "-cdrm", path },
+                    // TODO: these take waaaaay too long to load. maybe a dedicated emulator will fix it?
+                    //("ZX Spectrum", _) // dump, quik, cass
+                    //    => new[] { "C:\\Portable Programs\\MAME\\mame.exe", "spec128", "-cass", path },
+                    ("3DO", ".cue")
+                        => new[] { "C:\\RetroArch-Win64\\retroarch.exe", "-L", "opera", path },
                     _ => null,
                 };
             }
@@ -53,8 +100,18 @@ namespace RetroRoulette
             public void Play()
             {
                 Debug.Assert(CanPlay);
-                Process.Start(GetPlayCommand()!);
-            }
+                string[] command = GetPlayCommand()!;
+
+                Process p = new Process();
+
+                p.StartInfo.FileName = command[0];
+                foreach (string arg in command.Skip(1))
+                    p.StartInfo.ArgumentList.Add(arg);
+
+                // MAME looks for paths on the working directory (annoying)
+                p.StartInfo.WorkingDirectory = Path.GetDirectoryName(command[0]);
+                p.Start();
+            }                
         }
 
         class FolderNode
@@ -62,52 +119,47 @@ namespace RetroRoulette
             public readonly string name;
             public List<FolderNode> subfolders = new List<FolderNode>();
             public List<ROM> roms = new List<ROM>();
+            // public FolderNode parent;
 
             public bool enabled = true;
 
             public bool IsRomDir => subfolders.Count == 0;
-            public int RomCount => IsRomDir ? roms.Count : subfolders.Sum(folder => folder.RomCount);
+            public IEnumerable<ROM> AllRoms => roms.Concat(subfolders.SelectMany(folder => folder.AllRoms));
 
             public FolderNode(string dirPath)
             {
                 this.name = dirPath.Split(Path.DirectorySeparatorChar).Last();
-
                 Populate(dirPath);
             }
 
-            public void Populate(string dirPath)
+            private void Populate(string dirPath)
             {
-                string[] dirs = Directory.GetDirectories(dirPath);
+                if (File.Exists(Path.Combine(dirPath, "_noroms_tree.rrt")))
+                    return;
 
-                if (dirs.Length == 0)
+                if (File.Exists(Path.Combine(dirPath, "_noroms.rrt")))
                 {
-                    roms = Directory.EnumerateFiles(dirPath)
-                        .Where(filePath => !ROMNameParser.IsBios(filePath))
-                        .Select(filePath => new ROM(filePath, this))
-                        .Where(rom => rom.CanPlay)
-                        .ToList();
-
-                    if (roms.Count(rom => rom.Ext == ".cue") == 1 && roms.Count(rom => rom.Ext == ".bin") == roms.Count - 1)
-                    {
-                        roms = new List<ROM> { roms.Single(rom => rom.Ext == ".cue") };
-                    }
+                    subfolders = Directory.GetDirectories(dirPath).Select(dir => new FolderNode(dir)).Where(node => node.subfolders.Count > 0 || node.roms.Count > 0).ToList();
                 }
                 else
                 {
-                    subfolders = dirs.Except(new[] { @"D:\ROMs\[Extras]", @"D:\ROMs\MAME" }).Select(dir => new FolderNode(dir)).Where(node => node.subfolders.Count > 0 || node.roms.Count > 0).ToList();
-
-                    if (subfolders.All(node => node.IsRomDir && node.roms.Count == 1))
-                    {
-                        roms = subfolders.Select(node => node.roms[0]).ToList();
-                        roms.ForEach(rom => rom.folder = this);
-                        subfolders.Clear();
-                    }
+                    roms = Directory.EnumerateFiles(dirPath, "*", SearchOption.AllDirectories)
+                        .Where(filePath => !ROMNameParser.IsBios(filePath))
+                        .Select(filePath => new ROM(filePath, this))
+                        .Where(rom => rom.CanPlay)
+                        //.GroupBy(rom => rom.gameDetails.name)
+                        //.OrderBy(rom => rom.name) // TODO remove
+                        .ToList();
                 }
             }
         }
 
         static bool _spinning = false;
         static List<ROM> _chosenRoms = new List<ROM>();
+
+        static string search = "";
+        static bool MatchesSearch(string str) => search.Length == 0 || str.Contains(search, StringComparison.CurrentCultureIgnoreCase);
+        static bool showAdvanced = false;
 
         static void Main(string[] args)
         {
@@ -154,59 +206,49 @@ namespace RetroRoulette
 
                 ImGui.Begin("Main", ImGuiWindowFlags.NoTitleBar | ImGuiWindowFlags.NoResize | ImGuiWindowFlags.NoMove);
 
-                ImGui.BeginDisabled(_spinning);
-
-                if (ImGui.Button("Spin"))
                 {
-                    _spinning = true;
+                    ImGui.PushFont(controller.font40);
+                    ImGui.PushStyleVar(ImGuiStyleVar.FramePadding, ImGui.GetStyle().FramePadding * 2);
+                    
+                    float buttonsSize = ImGui.CalcTextSize("Spin").X + ImGui.CalcTextSize("Stop").X + ImGui.GetStyle().ItemSpacing.X + ImGui.GetStyle().FramePadding.X * 4;
+
+                    ImGui.SetCursorPosX(ImGui.GetCursorPosX() + (ImGui.GetContentRegionAvail().X / 2 - buttonsSize / 2));
+
+                    ImGui.BeginDisabled(_spinning);
+
+                    if (ImGui.Button("Spin"))
+                    {
+                        _spinning = true;
+                    }
+
+                    ImGui.EndDisabled();
+
+                    ImGui.SameLine();
+
+                    ImGui.BeginDisabled(!_spinning);
+
+                    if (ImGui.Button("Stop"))
+                    {
+                        _spinning = false;
+                    }
+
+                    ImGui.EndDisabled();
+
+                    ImGui.PopStyleVar();
+                    ImGui.PopFont();
                 }
 
-                ImGui.EndDisabled();
+                ImGui.InputText("##search", ref search, 128);
 
                 ImGui.SameLine();
 
-                ImGui.BeginDisabled(!_spinning);
-
-                if (ImGui.Button("Stop"))
-                {
-                    _spinning = false;
-                }
-
-                ImGui.EndDisabled();
+                ImGui.Checkbox("Advanced", ref showAdvanced);
 
                 if (_spinning)
                 {
-                    List<ROM> allRoms = new List<ROM>();
+                    List<ROM> allRoms = rootNode.AllRoms.Where(rom => /* rom.CanPlay && */ rom.folder.enabled && MatchesSearch(rom.name)).ToList();
 
-                    Stack<Queue<FolderNode>> foldersStack = new Stack<Queue<FolderNode>>();
-                    foldersStack.Push(new Queue<FolderNode>(rootNode.subfolders));
-
-                    while (foldersStack.Count > 0)
-                    {
-                        if (foldersStack.Peek().TryDequeue(out FolderNode nextNode))
-                        {
-                            if (nextNode.enabled)
-                            {
-                                if (nextNode.IsRomDir)
-                                {
-                                    allRoms.AddRange(nextNode.roms);
-                                }
-                                else
-                                {
-                                    foldersStack.Push(new Queue<FolderNode>(nextNode.subfolders));
-                                }
-                            }
-                        }
-                        else
-                        {
-                            while (foldersStack.Count > 0 && foldersStack.Peek().Count == 0)
-                            {
-                                foldersStack.Pop();
-                            }
-                        }
-                    }
-
-                    if (allRoms.Count() == 0)
+                    if (allRoms.Count == 0)
                     {
                         _spinning = false;
                     }
@@ -223,11 +265,14 @@ namespace RetroRoulette
                     }
                 }
 
-                if (ImGui.BeginTable("roms", 4))
+                const int nameColWidth = 400;
+
+                ImGui.SetCursorPosX(ImGui.GetCursorPosX() + (ImGui.GetContentRegionAvail().X / 2 - nameColWidth / 2));
+
+                if (ImGui.BeginTable("roms", 3))
                 {
-                    ImGui.TableSetupColumn("##name", ImGuiTableColumnFlags.WidthFixed, 400);
-                    ImGui.TableSetupColumn("##console", ImGuiTableColumnFlags.WidthFixed, 150);
-                    ImGui.TableSetupColumn("##button", ImGuiTableColumnFlags.WidthFixed, 40);
+                    ImGui.TableSetupColumn("##name", ImGuiTableColumnFlags.WidthFixed, nameColWidth);
+                    ImGui.TableSetupColumn("##button", ImGuiTableColumnFlags.WidthFixed, 60);
                     ImGui.TableSetupColumn("##fullname", ImGuiTableColumnFlags.WidthStretch);
 
                     foreach (ROM rom in _chosenRoms)
@@ -235,16 +280,20 @@ namespace RetroRoulette
                         ImGui.TableNextRow();
 
                         ImGui.TableNextColumn();
-                        ImGui.Text(rom.gameDetails.name);
-
-                        ImGui.TableNextColumn();
+                        ImGui.PushFont(controller.font30);
+                        ImGui.TextWrapped(rom.gameDetails.name);
+                        ImGui.PopFont();
                         ImGui.Text(rom.folder.name);
 
+                        ImGui.Spacing();
+                        ImGui.Spacing();
+
                         ImGui.TableNextColumn();
+
+                        ImGui.PushFont(controller.font40);
                         if (ImGui.Button($"Play##{rom.path}"))
-                        {
                             rom.Play();
-                        }
+                        ImGui.PopFont();
 
                         ImGui.TableNextColumn();
                         ImGui.Text(rom.name);
@@ -255,7 +304,10 @@ namespace RetroRoulette
 
                 // Render folder browser
 
+                if (showAdvanced)
                 {
+                    ImGui.Separator();
+
                     if (ImGui.BeginTable("table", 3))
                     {
                         ImGui.TableSetupColumn("##name", ImGuiTableColumnFlags.WidthFixed, 500);
@@ -269,11 +321,6 @@ namespace RetroRoulette
                         {
                             if (foldersStack.Peek().TryDequeue(out FolderNode nextNode))
                             {
-                                if (nextNode.IsRomDir)
-                                {
-                                    ImGui.PushStyleColor(ImGuiCol.Text, 0xFF00FF00);
-                                }
-
                                 ImGui.TableNextRow();
                                 ImGui.TableNextColumn();
 
@@ -283,7 +330,17 @@ namespace RetroRoulette
                                     {
                                         foreach (ROM rom in nextNode.roms)
                                         {
-                                            ImGui.Selectable($"{rom.gameDetails} ({rom.name})");
+                                            ImGui.PushStyleColor(ImGuiCol.Text, rom.CanPlay ? 0xFF00FF00 : 0xFF0000FF);
+
+                                            if (MatchesSearch(rom.name))
+                                            {
+                                                if (ImGui.Selectable($"{Path.GetFileName(rom.path)}"))
+                                                {
+                                                    rom.Play();
+                                                }
+                                            }
+
+                                            ImGui.PopStyleColor();
                                         }
 
                                         ImGui.TreePop();
@@ -294,16 +351,15 @@ namespace RetroRoulette
                                     }
                                 }
 
-                                if (nextNode.IsRomDir)
-                                {
-                                    ImGui.PopStyleColor();
-                                }
-
                                 ImGui.TableNextColumn();
+
                                 ImGui.Checkbox($"##{nextNode.name}", ref nextNode.enabled);
 
                                 ImGui.TableNextColumn();
-                                ImGui.Text($"{nextNode.RomCount}");
+
+                                ImGui.PushStyleColor(ImGuiCol.Text, 0xFF00FF00);
+                                ImGui.Text($"{nextNode.AllRoms.Where(rom => rom.CanPlay).Count()}");
+                                ImGui.PopStyleColor();
                             }
                             else
                             {
@@ -318,6 +374,7 @@ namespace RetroRoulette
                         ImGui.EndTable();
                     }
                 }
+
 
                 ImGui.End();
 
@@ -337,6 +394,7 @@ namespace RetroRoulette
             gd.Dispose();
         }
     }
+
 
     /// <summary>
     /// A modified version of Veldrid.ImGui's ImGuiRenderer.
@@ -365,6 +423,10 @@ namespace RetroRoulette
 
         private int _windowWidth;
         private int _windowHeight;
+        
+        public ImFontPtr font20;
+        public ImFontPtr font30;
+        public ImFontPtr font40;
 
         private struct ResourceSetInfo
         {
@@ -403,7 +465,9 @@ namespace RetroRoulette
                 ImGuiConfigFlags.DockingEnable;
             io.Fonts.Flags |= ImFontAtlasFlags.NoBakedLines;
 
-            io.Fonts.AddFontFromFileTTF(@"C:\Windows\Fonts\segoeui.ttf", 20);
+            font20 = io.Fonts.AddFontFromFileTTF(@"C:\Windows\Fonts\segoeui.ttf", 20);
+            font30 = io.Fonts.AddFontFromFileTTF(@"C:\Windows\Fonts\segoeui.ttf", 30);
+            font40 = io.Fonts.AddFontFromFileTTF(@"C:\Windows\Fonts\segoeui.ttf", 40);
 
             // Create device resources
 
@@ -898,7 +962,7 @@ namespace RetroRoulette
     static class ROMNameParser
     {
         // Apologies if some of this is wrong, I do not speak all of these languages lol
-        // TODO: reevaluate these after more stuff is added
+
         static string[] allArticles = new[]
         {
             "The", "A", "An", // English
@@ -971,24 +1035,6 @@ namespace RetroRoulette
         {
             Debug.Assert(!IsBios(name));
 
-            /*
-            string matchBIOS = @"(?<biosflag>\[BIOS\] )?";
-            string matchGameName = @"(?<gamename>.+?)";
-            string matchProps = @"( \((?<props>[^\(\)]+?)\))*";
-            // This is only ever [b], we don't care about bad-dump-ness though
-            string matchStatus = @"( \[(?<status>.+?)\])?";
-
-            Regex rx = new Regex($"^{matchBIOS}{matchGameName}{matchProps}{matchStatus}$", RegexOptions.ExplicitCapture);
-            Match match = rx.Match(name);
-
-            // Ignore bioses
-            string? bios = GetCaptureForGroup(match, "biosflag");
-            if (bios != null)
-            {
-                return null;
-            }
-            */
-
             string matchGameName = @"(?<gamename>.+?)";
             string matchProps = @"( \((?<props>[^\(\)]+?)\))*";
             // This is only ever [b], we don't care about bad-dump-ness though
@@ -1004,7 +1050,7 @@ namespace RetroRoulette
             List<string>? falseProps = null;
             for (int i = 0; i < maybeProps.Count; i++)
             {
-                string[] potentialRegions = maybeProps[i].Split(new[] { ", " }, StringSplitOptions.None);
+                string[] potentialRegions = maybeProps[i].Split(", ");
                 if (VALID_REGIONS.IsSupersetOf(potentialRegions))
                 {
                     props = maybeProps.Skip(i).ToList();
@@ -1022,7 +1068,7 @@ namespace RetroRoulette
 
             string gameName = GetCaptureForGroup(match, "gamename") + String.Join("", falseProps.Select(p => $" ({p})"));
             gameName = FixArticlesInName(gameName);
-            string[] regions = props[0].Split(new[] { ", " }, StringSplitOptions.None);
+            string[] regions = props[0].Split(", ");
             string[] languages = { };
 
             // TODO: En,Ja,Fr,De,Es,It,Zh-Hant,Zh-Hans,Ko (3ds pokemon moon)
@@ -1098,11 +1144,6 @@ namespace RetroRoulette
                     break;
                 }
             }
-
-            //if (Config.SHOW_RENAMED_GAMES && fixedName != name)
-            //{
-            //    Console.WriteLine($"RENAMED: \"{name}\" ||| \"{fixedName}\"");
-            //}
 
             return fixedName;
         }
