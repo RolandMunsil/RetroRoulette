@@ -124,6 +124,25 @@ namespace RetroRoulette
                 this.folder = folder;
                 this.roms = roms;
             }
+
+            public ROM DefaultROM()
+            {
+                List<ROM> filteredRoms = new List<ROM>(roms);
+
+                List<ROM> usaRoms = filteredRoms.Where(rom => rom.details.regions.Contains("USA")).ToList();
+                if (usaRoms.Count > 1)
+                {
+                    filteredRoms = usaRoms;
+                }
+
+                List<ROM> noPropsRoms = filteredRoms.Where(rom => rom.details.additionalProperties.Count == 0).ToList();
+                if (noPropsRoms.Count > 1)
+                {
+                    filteredRoms = noPropsRoms;
+                }
+
+                return filteredRoms.First();
+            }
         }
 
         class FolderNode
@@ -166,12 +185,36 @@ namespace RetroRoulette
             }
         }
 
-        static bool _spinning = false;
-        static List<(Game, ROM)> _chosenGames = new List<(Game, ROM)>();
+        class Reel
+        {
+            public bool spinning;
+            public Game game;
+            public ROM rom;
+
+            public Reel(Game game)
+            {
+                this.spinning = true;
+                this.game = game;
+                this.rom = game.DefaultROM();
+            }
+        }
+
+
+        static List<Reel> reels = new List<Reel>();
 
         static string search = "";
         static bool MatchesSearch(string str) => search.Length == 0 || str.Contains(search, StringComparison.CurrentCultureIgnoreCase);
         static bool showAdvanced = false;
+        static int nGames = 3;
+
+        static double spinTickTime = 0.04f;
+        static double nextSpinTick = 0;
+
+        static void CenterNextItem(float itemWidth)
+        {
+            ImGui.SetCursorPosX(ImGui.GetCursorPosX() + (ImGui.GetContentRegionAvail().X / 2 - itemWidth / 2));
+            ImGui.SetNextItemWidth(itemWidth);
+        }
 
         static void Main(string[] args)
         {
@@ -199,6 +242,7 @@ namespace RetroRoulette
             FolderNode rootNode = new FolderNode("D:\\ROMs");
 
             Stopwatch stopwatch = Stopwatch.StartNew();
+            Stopwatch swLifetime = Stopwatch.StartNew();
 
             // Main application loop
             while (window.Exists)
@@ -218,112 +262,136 @@ namespace RetroRoulette
 
                 ImGui.Begin("Main", ImGuiWindowFlags.NoTitleBar | ImGuiWindowFlags.NoResize | ImGuiWindowFlags.NoMove);
 
+                List<Game> possibleGames = rootNode.AllGames.Where(game => MatchesSearch(game.name)).ToList();
+                Func<Game> fnRandGame = () => possibleGames[Random.Shared.Next(possibleGames.Count() - 1)];
+
                 {
                     ImGui.PushFont(controller.font40);
                     ImGui.PushStyleVar(ImGuiStyleVar.FramePadding, ImGui.GetStyle().FramePadding * 2);
+                    ImGui.BeginDisabled(reels.Any(reel => reel.spinning));
                     
-                    float buttonsSize = ImGui.CalcTextSize("Spin").X + ImGui.CalcTextSize("Stop").X + ImGui.GetStyle().ItemSpacing.X + ImGui.GetStyle().FramePadding.X * 4;
-
+                    float buttonsSize = ImGui.CalcTextSize("Spin").X + ImGui.GetStyle().FramePadding.X * 2;
                     ImGui.SetCursorPosX(ImGui.GetCursorPosX() + (ImGui.GetContentRegionAvail().X / 2 - buttonsSize / 2));
-
-                    ImGui.BeginDisabled(_spinning);
-
                     if (ImGui.Button("Spin"))
                     {
-                        _spinning = true;
+                        reels.Clear();
+
+                        for (int i = 0; i < nGames; i++)
+                        {
+                            reels.Add(new Reel(fnRandGame()));
+                        }
+
+                        nextSpinTick = swLifetime.Elapsed.TotalSeconds;
                     }
 
                     ImGui.EndDisabled();
+                    ImGui.PopStyleVar();
+                    ImGui.PopFont();
 
                     ImGui.SameLine();
 
-                    ImGui.BeginDisabled(!_spinning);
-
-                    if (ImGui.Button("Stop"))
-                    {
-                        _spinning = false;
-                    }
-
-                    ImGui.EndDisabled();
-
-                    ImGui.PopStyleVar();
-                    ImGui.PopFont();
+                    if (ImGui.Button("-"))
+                        nGames--;
+                    ImGui.SameLine();
+                    ImGui.Text($"{nGames}");
+                    ImGui.SameLine();
+                    if (ImGui.Button("+"))
+                        nGames++;
                 }
 
-                const int searchBarWidth = 300;
-
-                ImGui.SetCursorPosX(ImGui.GetCursorPosX() + (ImGui.GetContentRegionAvail().X / 2 - searchBarWidth / 2));
-
-                ImGui.SetNextItemWidth(searchBarWidth);
+                CenterNextItem(300);
                 ImGui.InputText("##search", ref search, 128);
+                ImGui.SameLine();
+                ImGui.Text($"{possibleGames.Count}");
 
-                if (_spinning)
+                if (swLifetime.Elapsed.TotalSeconds >= nextSpinTick)
                 {
-                    List<Game> allgames = rootNode.AllGames.Where(game => /*rom.folder.enabled && */ MatchesSearch(game.name)).ToList();
-
-                    if (allgames.Count == 0)
+                    for (int i = 0; i < reels.Count; i++)
                     {
-                        _spinning = false;
-                    }
-                    else
-                    {
-                        _chosenGames.Clear();
-
-                        int nRoms = 3;
-
-                        for (int i = 0; i < nRoms; i++)
+                        if (reels[i].spinning)
                         {
-                            Game game = allgames[Random.Shared.Next(allgames.Count() - 1)];
-                            _chosenGames.Add((game, game.roms.First()));
+                            reels[i].game = fnRandGame();
+                            reels[i].rom = reels[i].game.DefaultROM();
                         }
                     }
+
+                    if (reels.Any(reel => reel.spinning))
+                    {
+                        nextSpinTick = swLifetime.Elapsed.TotalSeconds + spinTickTime;
+                    }
                 }
 
+                const int stopColWidth = 90;
                 const int nameColWidth = 400;
 
-                ImGui.SetCursorPosX(ImGui.GetCursorPosX() + (ImGui.GetContentRegionAvail().X / 2 - nameColWidth / 2));
+                ImGui.SetCursorPosX(ImGui.GetCursorPosX() + (ImGui.GetContentRegionAvail().X / 2 - nameColWidth / 2) - stopColWidth);
 
-                if (ImGui.BeginTable("roms", 2))
+                if (ImGui.BeginTable("roms", 3))
                 {
+                    ImGui.TableSetupColumn("##stop", ImGuiTableColumnFlags.WidthFixed, stopColWidth);
                     ImGui.TableSetupColumn("##name", ImGuiTableColumnFlags.WidthFixed, nameColWidth);
                     ImGui.TableSetupColumn("##button", ImGuiTableColumnFlags.WidthFixed, 300);
 
-                    for (int i = 0; i < _chosenGames.Count; i++)
+                    for (int i = 0; i < reels.Count; i++)
                     {
-                        (Game game, ROM rom) = _chosenGames[i];
+                        Reel reel = reels[i];
 
                         ImGui.TableNextRow();
 
                         ImGui.TableNextColumn();
+
+                        if (reel.spinning)
+                        {
+                            ImGui.PushFont(controller.font40);
+
+                            if (ImGui.Button("Stop"))
+                            {
+                                reel.spinning = false;
+                            }
+
+                            ImGui.PopFont();
+                        }
+
+                        ImGui.TableNextColumn();
                         ImGui.PushFont(controller.font30);
-                        ImGui.TextWrapped(game.name);
+                        if (reel.spinning)
+                        {
+                            ImGui.Text(reel.game.name);
+                        }
+                        else
+                        {
+                            ImGui.TextWrapped(reel.game.name);
+                        }
                         ImGui.PopFont();
-                        ImGui.Text(game.folder.name);
+                        ImGui.Text(reel.game.folder.name);
 
                         ImGui.Spacing();
                         ImGui.Spacing();
 
                         ImGui.TableNextColumn();
 
-                        ImGui.BeginDisabled(game.roms.Count() == 1);
-
-                        if (ImGui.BeginCombo($"##options{game.folder}+{game.name}", rom.details.PropsString()))
+                        if (!reel.spinning)
                         {
-                            foreach (ROM romSelectable in game.roms)
+                            ImGui.BeginDisabled(reel.game.roms.Count() == 1);
+
+                            if (ImGui.BeginCombo($"##options{reel.game.folder}+{reel.game.name}", reel.rom.details.PropsString()))
                             {
-                                if (ImGui.Selectable(romSelectable.details.PropsString()))
+                                foreach (ROM romSelectable in reel.game.roms)
                                 {
-                                    _chosenGames[i] = (game, romSelectable);
+                                    if (ImGui.Selectable(romSelectable.details.PropsString()))
+                                    {
+                                        reel.rom = romSelectable;
+                                    }
                                 }
+
+                                ImGui.EndCombo();
                             }
 
-                            ImGui.EndCombo();
+                            ImGui.EndDisabled();
+
+                            if (ImGui.Button($"Play##{reel.game.folder}+{reel.game.name}"))
+                                reel.rom.Play();
                         }
-
-                        ImGui.EndDisabled();
-
-                        if (ImGui.Button($"Play##{game.folder}+{game.name}"))
-                            rom.Play();
                     }
 
                     ImGui.EndTable();
@@ -365,8 +433,6 @@ namespace RetroRoulette
                                     {
                                         foreach (Game game in nextNode.games)
                                         {
-                                            // ImGui.PushStyleColor(ImGuiCol.Text, rom.CanPlay ? 0xFF00FF00 : 0xFF0000FF);
-
                                             if (MatchesSearch(game.name) && ImGui.TreeNode($"{game.name}"))
                                             {
                                                 foreach (ROM rom in game.roms)
@@ -377,8 +443,6 @@ namespace RetroRoulette
 
                                                 ImGui.TreePop();
                                             }
-
-                                            // ImGui.PopStyleColor();
                                         }
 
                                         ImGui.TreePop();
