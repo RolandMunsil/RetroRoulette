@@ -21,7 +21,7 @@ namespace RetroRoulette
     {
         public string path;
         public RomInfo details;
-        private string folderName; // TODO remove?
+        private string folderName;
 
         public string Ext => Path.GetExtension(this.path);
 
@@ -49,6 +49,8 @@ namespace RetroRoulette
                 // TODO test all the systems
                 // TODO list roms that weren't playable
                 // TODO merge ROMs by name?
+
+                // TODO save weights to file?
 
                 ("Gamecube" or "Wii (Discs)" or "Wii (WiiWare)", ".rvz" or ".wbfs" or ".wad")
                     => new[] { "C:\\Portable Programs\\Dolphin\\Dolphin.exe", "-e", path },
@@ -147,23 +149,45 @@ namespace RetroRoulette
     {
         public readonly string name;
         public List<FolderNode> subfolders = new List<FolderNode>();
-        public List<Game> games = new List<Game>();
+        private List<Game> games = new List<Game>();
 
+        public static string gameNameFilter = "";
+        public static bool MatchesFilter(string str) => gameNameFilter.Length == 0 || str.Contains(gameNameFilter, StringComparison.CurrentCultureIgnoreCase);
+        public IEnumerable<Game> FilteredGames => games.Where(game => MatchesFilter(game.name));
 
         public bool IsGameDir => subfolders.Count == 0;
-        public IEnumerable<Game> AllGames => games.Concat(subfolders.SelectMany(folder => folder.AllGames));
-        public int CombinedWeight => IsGameDir ? Weight : subfolders.Sum(folder => folder.CombinedWeight);
+        public IEnumerable<Game> AllGames => FilteredGames.Concat(subfolders.SelectMany(folder => folder.AllGames));
+        public double CombinedWeight => IsGameDir ? Weight : subfolders.Sum(folder => folder.CombinedWeight);
 
-        public bool enabled;
-        private int weightInternal;
-        public int Weight => enabled ? weightInternal : 0;
+        private bool enabledInternal;
+        public bool Enabled
+        {
+            get
+            {
+                return IsGameDir ? enabledInternal : subfolders.Any(folder => folder.Enabled);
+            }
+            set
+            {
+                if (IsGameDir)
+                {
+                    enabledInternal = value;
+                }
+                else
+                {
+                    subfolders.ForEach(subfolder => subfolder.Enabled = value);
+                }
+            }
+        }
+
+        private double weightInternal;
+        public double Weight => (Enabled && FilteredGames.Any()) ? weightInternal : 0;
 
         public FolderNode(string dirPath)
         {
             this.name = dirPath.Split(Path.DirectorySeparatorChar).Last();
             Populate(dirPath);
 
-            enabled = true;
+            enabledInternal = true;
             weightInternal = games.Count;
         }
 
@@ -189,19 +213,60 @@ namespace RetroRoulette
                     .ToList();
             }
         }
+
+        public Game WeightedRandomGame()
+        {
+            if (IsGameDir)
+            {
+                List<Game> filteredGames = FilteredGames.ToList();
+                return filteredGames[Random.Shared.Next(filteredGames.Count - 1)];
+            }
+
+            double next = Random.Shared.NextDouble() * CombinedWeight;
+            double total = 0;
+
+            foreach (FolderNode node in subfolders)
+            {
+                total += node.CombinedWeight;
+
+                if (next < total)
+                {
+                    return node.WeightedRandomGame();
+                }
+            }
+
+            throw new Exception();
+        }
+
+        public void MultiplyWeight(double mul)
+        {
+            if (IsGameDir)
+            {
+                weightInternal *= mul;
+            }
+            else
+            {
+                subfolders.ForEach(folder => folder.MultiplyWeight(mul));
+            }
+        }
     }
 
     class Reel
     {
         public bool spinning;
-        public Game game;
+        private Game game;
         public ROM rom;
+
+        public Game Game
+        {
+            get { return game; }
+            set { game = value; rom = game.DefaultROM(); }
+        }
 
         public Reel(Game game)
         {
             this.spinning = true;
-            this.game = game;
-            this.rom = game.DefaultROM();
+            this.Game = game;
         }
     }
 
@@ -221,17 +286,16 @@ namespace RetroRoulette
 
         // Config
 
-        static string gameNameFilter = "";
-        static bool MatchesFilter(string str) => gameNameFilter.Length == 0 || str.Contains(gameNameFilter, StringComparison.CurrentCultureIgnoreCase);
-
         static FolderNode rootNode = new FolderNode("D:\\ROMs");
 
         static bool showAdvanced = false;
 
+        static FolderNode? nodeDraggedProgressBar = null;
+
         static void Main(string[] args)
         {
-           Sdl2Window window;
-           GraphicsDevice gd;
+            Sdl2Window window;
+            GraphicsDevice gd;
 
             // Create window, GraphicsDevice, and all resources necessary for the demo.
 
@@ -299,9 +363,6 @@ namespace RetroRoulette
 
             ImGui.Begin("Main", ImGuiWindowFlags.NoTitleBar | ImGuiWindowFlags.NoResize | ImGuiWindowFlags.NoMove);
 
-            List<Game> possibleGames = rootNode.AllGames.Where(game => MatchesFilter(game.name)).ToList();
-            Func<Game> fnRandGame = () => possibleGames[Random.Shared.Next(possibleGames.Count() - 1)];
-
             {
                 ImGui.PushFont(font40);
                 ImGui.PushStyleVar(ImGuiStyleVar.FramePadding, ImGui.GetStyle().FramePadding * 2);
@@ -315,7 +376,7 @@ namespace RetroRoulette
 
                     for (int i = 0; i < nReels; i++)
                     {
-                        reels.Add(new Reel(fnRandGame()));
+                        reels.Add(new Reel(rootNode.WeightedRandomGame()));
                     }
 
                     nextSpinTick = appStopwatch.Elapsed.TotalSeconds;
@@ -328,39 +389,27 @@ namespace RetroRoulette
                 ImGui.SameLine();
 
                 ImGui.SetNextItemWidth(80);
-                ImGui.InputInt("##a", ref nReels);
-
-                //if (ImGui.Button("-"))
-                //    nReels--;
-                //ImGui.SameLine();
-                //ImGui.Text($"{nReels}");
-                //ImGui.SameLine();
-                //if (ImGui.Button("+"))
-                //    nReels++;
+                ImGui.InputInt("##nReels", ref nReels);
             }
 
             const float searchWidth = 300;
             ImGui.SetCursorPosX(ImGui.GetCursorPosX() + (ImGui.GetContentRegionAvail().X / 2 - searchWidth / 2));
             ImGui.SetNextItemWidth(searchWidth);
-            ImGui.InputText("##search", ref gameNameFilter, 128);
+            ImGui.InputText("##search", ref FolderNode.gameNameFilter, 128);
             ImGui.SameLine();
-            ImGui.Text($"{possibleGames.Count}");
+            ImGui.Text($"{rootNode.AllGames.Count()}");
 
-            if (appStopwatch.Elapsed.TotalSeconds >= nextSpinTick)
+            if (reels.Any(reel => reel.spinning) && appStopwatch.Elapsed.TotalSeconds >= nextSpinTick)
             {
-                for (int i = 0; i < reels.Count; i++)
+                foreach (Reel reel in reels)
                 {
-                    if (reels[i].spinning)
+                    if (reel.spinning)
                     {
-                        reels[i].game = fnRandGame();
-                        reels[i].rom = reels[i].game.DefaultROM();
+                        reel.Game = rootNode.WeightedRandomGame();
                     }
                 }
 
-                if (reels.Any(reel => reel.spinning))
-                {
-                    nextSpinTick = appStopwatch.Elapsed.TotalSeconds + spinTickTime;
-                }
+                nextSpinTick = appStopwatch.Elapsed.TotalSeconds + spinTickTime;
             }
 
             const int stopColWidth = 90;
@@ -374,9 +423,13 @@ namespace RetroRoulette
                 ImGui.TableSetupColumn("##name", ImGuiTableColumnFlags.WidthFixed, nameColWidth);
                 ImGui.TableSetupColumn("##button", ImGuiTableColumnFlags.WidthFixed, 300);
 
-                for (int i = 0; i < reels.Count; i++)
+                int i = 0;
+
+                foreach (Reel reel in reels)
                 {
-                    Reel reel = reels[i];
+                    i++;
+
+                    Game game = reel.Game;
 
                     ImGui.TableNextRow();
 
@@ -384,28 +437,31 @@ namespace RetroRoulette
 
                     if (reel.spinning)
                     {
-                        ImGui.PushFont(font40);
+                        Vector4 color = new Vector4(0.9f, 0.3f, 0.2f, 1.0f);
+                        ImGui.PushStyleColor(ImGuiCol.Button, color);
+                        ImGui.PushStyleColor(ImGuiCol.ButtonHovered, color * 0.9f);
+                        ImGui.PushStyleColor(ImGuiCol.ButtonActive, color * 0.7f);
 
-                        if (ImGui.Button("Stop"))
+                        if (ImGui.Button($"##stop{i}", new Vector2(60, 60)))
                         {
                             reel.spinning = false;
                         }
 
-                        ImGui.PopFont();
+                        ImGui.PopStyleColor(3);
                     }
 
                     ImGui.TableNextColumn();
                     ImGui.PushFont(font30);
                     if (reel.spinning)
                     {
-                        ImGui.Text(reel.game.name);
+                        ImGui.Text(game.name);
                     }
                     else
                     {
-                        ImGui.TextWrapped(reel.game.name);
+                        ImGui.TextWrapped(game.name);
                     }
                     ImGui.PopFont();
-                    ImGui.Text(reel.game.folder.name);
+                    ImGui.Text(game.folder.name);
 
                     ImGui.Spacing();
                     ImGui.Spacing();
@@ -414,11 +470,11 @@ namespace RetroRoulette
 
                     if (!reel.spinning)
                     {
-                        ImGui.BeginDisabled(reel.game.roms.Count() == 1);
+                        ImGui.BeginDisabled(game.roms.Count() == 1);
 
-                        if (ImGui.BeginCombo($"##options{reel.game.folder}+{reel.game.name}", reel.rom.details.PropsString()))
+                        if (ImGui.BeginCombo($"##options{game.folder}+{game.name}", reel.rom.details.PropsString()))
                         {
-                            foreach (ROM romSelectable in reel.game.roms)
+                            foreach (ROM romSelectable in game.roms)
                             {
                                 if (ImGui.Selectable(romSelectable.details.PropsString()))
                                 {
@@ -431,7 +487,7 @@ namespace RetroRoulette
 
                         ImGui.EndDisabled();
 
-                        if (ImGui.Button($"Play##{reel.game.folder}+{reel.game.name}"))
+                        if (ImGui.Button($"Play##{game.folder}+{game.name}"))
                             reel.rom.Play();
                     }
                 }
@@ -441,8 +497,7 @@ namespace RetroRoulette
 
             // Render folder browser
 
-            ImGui.SetCursorPosY(380);
-
+            ImGui.SetCursorPosY(Math.Max(ImGui.GetCursorPosY(), 380));
             ImGui.Checkbox("Advanced", ref showAdvanced);
 
             if (showAdvanced)
@@ -456,7 +511,7 @@ namespace RetroRoulette
                     ImGui.TableSetupColumn("##enable", ImGuiTableColumnFlags.WidthFixed, 25);
                     ImGui.TableSetupColumn("##bar", ImGuiTableColumnFlags.WidthStretch);
 
-                    int weightTotal = rootNode.CombinedWeight;
+                    double weightTotal = rootNode.CombinedWeight;
 
                     Stack<Queue<FolderNode>> foldersStack = new Stack<Queue<FolderNode>>();
                     foldersStack.Push(new Queue<FolderNode>(rootNode.subfolders));
@@ -476,7 +531,7 @@ namespace RetroRoulette
                                 {
                                     if (ImGui.TreeNode(nextNode.name))
                                     {
-                                        foreach (Game game in nextNode.games)
+                                        foreach (Game game in nextNode.FilteredGames)
                                         {
                                             if (ImGui.TreeNode($"{game.name}"))
                                             {
@@ -509,7 +564,11 @@ namespace RetroRoulette
 
                             ImGui.TableNextColumn();
 
-                            ImGui.Checkbox($"##{nextNode.name}", ref nextNode.enabled);
+                            bool enabled = nextNode.Enabled;
+                            if (ImGui.Checkbox($"##{nextNode.name}", ref enabled))
+                            {
+                                nextNode.Enabled = enabled;
+                            }
 
                             ImGui.TableNextColumn();
 
@@ -517,11 +576,20 @@ namespace RetroRoulette
                             {
                                 //ImGui.PushStyleColor(ImGuiCol.PlotHistogram)
 
-                                float weightFraction = nextNode.CombinedWeight / (float)weightTotal;
+                                double weightFraction = nextNode.CombinedWeight / weightTotal;
 
                                 string display = $"{100 * weightFraction:f1}% ({nextNode.AllGames.Count()} games)";
 
-                                ImGui.ProgressBar(weightFraction, new Vector2(-50, 0f), nextNode.enabled ? display : "(disabled)");
+                                ImGui.ProgressBar((float)weightFraction, new Vector2(-10, 0f), nextNode.Enabled ? display : "(disabled)");
+
+                                if (ImGui.IsItemClicked(ImGuiMouseButton.Left))
+                                    nodeDraggedProgressBar = nextNode;
+
+                                if (ImGui.IsMouseReleased(ImGuiMouseButton.Left))
+                                    nodeDraggedProgressBar = null;
+
+                                if (nodeDraggedProgressBar == nextNode)
+                                    nextNode.MultiplyWeight(Math.Pow(1.01, ImGui.GetIO().MouseDelta.X));
                             }
                         }
                         else
@@ -537,8 +605,6 @@ namespace RetroRoulette
                     ImGui.EndTable();
                 }
             }
-
-            ImGui.ShowDemoWindow();
 
             ImGui.End();
         }

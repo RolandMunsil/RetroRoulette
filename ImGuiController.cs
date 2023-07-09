@@ -59,7 +59,6 @@ namespace RetroRoulette
             = new Dictionary<Texture, TextureView>();
         private readonly Dictionary<IntPtr, ResourceSetInfo> _viewsById = new Dictionary<IntPtr, ResourceSetInfo>();
         private readonly List<IDisposable> _ownedResources = new List<IDisposable>();
-        private int _lastAssignedID = 100;
 
         /// <summary>
         /// Constructs a new ImGuiController.
@@ -231,61 +230,6 @@ namespace RetroRoulette
             _windowWidth = width;
             _windowHeight = height;
         }
-
-        ///// <summary>
-        ///// Gets or creates a handle for a texture to be drawn with ImGui.
-        ///// Pass the returned handle to Image() or ImageButton().
-        ///// </summary>
-        //public IntPtr GetOrCreateImGuiBinding(ResourceFactory factory, TextureView textureView)
-        //{
-        //    if (!_setsByView.TryGetValue(textureView, out ResourceSetInfo rsi))
-        //    {
-        //        ResourceSet resourceSet = factory.CreateResourceSet(new ResourceSetDescription(_textureLayout, textureView));
-        //        rsi = new ResourceSetInfo(GetNextImGuiBindingID(), resourceSet);
-
-        //        _setsByView.Add(textureView, rsi);
-        //        _viewsById.Add(rsi.ImGuiBinding, rsi);
-        //        _ownedResources.Add(resourceSet);
-        //    }
-
-        //    return rsi.ImGuiBinding;
-        //}
-
-        //private IntPtr GetNextImGuiBindingID()
-        //{
-        //    int newID = _lastAssignedID++;
-        //    return (IntPtr)newID;
-        //}
-
-        ///// <summary>
-        ///// Gets or creates a handle for a texture to be drawn with ImGui.
-        ///// Pass the returned handle to Image() or ImageButton().
-        ///// </summary>
-        //public IntPtr GetOrCreateImGuiBinding(ResourceFactory factory, Texture texture)
-        //{
-        //    if (!_autoViewsByTexture.TryGetValue(texture, out TextureView? textureView))
-        //    {
-        //        textureView = factory.CreateTextureView(texture);
-        //        _autoViewsByTexture.Add(texture, textureView);
-        //        _ownedResources.Add(textureView);
-        //    }
-
-        //    return GetOrCreateImGuiBinding(factory, textureView);
-        //}
-
-        //public void ClearCachedImageResources()
-        //{
-        //    foreach (IDisposable resource in _ownedResources)
-        //    {
-        //        resource.Dispose();
-        //    }
-
-        //    _ownedResources.Clear();
-        //    _setsByView.Clear();
-        //    _viewsById.Clear();
-        //    _autoViewsByTexture.Clear();
-        //    _lastAssignedID = 100;
-        //}
 
         /// <summary>
         /// Updates ImGui input and IO configuration state.
