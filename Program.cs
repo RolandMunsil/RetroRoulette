@@ -36,21 +36,40 @@ namespace RetroRoulette
         {
             return (folderName, Ext) switch
             {
-                // TODO: Game Master, GP32, Playstation Portable, Pokemon Mini, Tiger Game.com, Watara Supervision
-                // TODO: LeapFrog Leapster? VTech V.Smile
-                // TODO: Amiga CD32
-                // TODO: Commodore CDTV, Funtech Super A'Can
-                // TODO: Atari 7800, Philips Videopac+ G7400, Sega SG-1000, Super Casette Vision
-                // TODO: 2nd Generation
-                // TODO: Home Computers
+                // To add in order of priority:
+                //  - More PC games
+                //     - Windows games (old '95/'98, more modern 2000s)
+                //     - MS-DOS games
+                //     - MSX?
+                //     - Apple II (and etc.)
+                //     - Amiga
+                //     - Macintosh (shareware?)
+                //     - Commodore 64?
+                //     - Others? ZX Spectrum?
+                //  - More PS2 games
+                //  - Japanese PS1 games?
+                //  - Support random weird systems: Game Master, GP32, Pokemon Mini, Tiger Game.com, Watara Supervision,
+                //    LeapFrog Leapster, VTech V.Smile, Amiga CD32, Commodore CDTV, Funtech Super A'Can, 
+                //    Atari 7800, Philips Videopac+ G7400, Sega SG-1000, Super Casette Vision, Arcadia 2001,
+                //    Atari 2600, Atari 5200, ColecoVision, Entex Adventure Vision, Fairchild Channel F, Intellivision
+                //    Magnavox Odyssey2, RCA Studio II, Vectrex, VTech Creativision. Others?
+                //  - MAME
+                //  - More PSP games
+                //  - More Xbox games
+                //  - More US games in 3DO?
+                //  - Steam games?
+                //  - Bluemaxima Flashpoint?
 
-                // TODO: Ooh old windows 98/95 games
-
+                // TODO: .bs doesn't work
+                // TODO: get the real gbc bios
                 // TODO test all the systems
                 // TODO list roms that weren't playable
-                // TODO merge ROMs by name?
-
                 // TODO save weights to file?
+                // TODO allow adjusting weights of non-open nodes, just indicate they're different somehow.
+
+                // TODO: option to hide names but not systems (in reels)
+                // TODO: selector for additional flags on ROMs, and regions. E.g. only play unlicensed games, or only play Korean games
+
 
                 ("Gamecube" or "Wii (Discs)" or "Wii (WiiWare)", ".rvz" or ".wbfs" or ".wad")
                     => new[] { "C:\\Portable Programs\\Dolphin\\Dolphin.exe", "-e", path },
@@ -63,10 +82,10 @@ namespace RetroRoulette
                 // NOTE: sounds like Ares is also a good option for PC Engine?
                 // NOTE: lynx roms need a BIOS? and also to be converted for mednafen?
                 (_, ".vb" or ".pce" or ".lnx")
-                or ("Sega Saturn" or "PlayStation", ".cue" or ".chd")
+                or ("Sega Saturn", ".cue")
                     => new[] { "C:\\Portable Programs\\Mednafen & Mednaffe\\mednafen.exe", path },
-                ("Game Gear", ".sms" or ".gg")
-                    => new[] { "C:\\Portable Programs\\ares-v132\\ares.exe", "--system", "Game Gear", path },
+                ("Playstation", ".cue" or ".chd")
+                    => new[] { "C:\\Portable Programs\\DuckStation\\duckstation-qt-x64-ReleaseLTCG.exe", path },
                 // NOTE: Genesis Plus GX or MAME(?) might have better support for Sega Master System games
                 // NOTE: Blastem or Genesis Plus GX might provide better emulation of Mega Drive games
                 (_, ".z64" or ".ndd" or ".sfc" or ".st" or ".bs" or ".32x" or ".sc" or ".ws" or ".wsc" or ".ngc" or ".ngp")
@@ -84,9 +103,6 @@ namespace RetroRoulette
                     => new[] { "C:\\Portable Programs\\mGBA\\mGBA.exe", path },
                 ("CD-i", ".chd")
                     => new[] { "C:\\Portable Programs\\MAME\\mame.exe", "cdimono1", "-cdrm", path },
-                // TODO: these take waaaaay too long to load. maybe a dedicated emulator will fix it?
-                //("ZX Spectrum", _) // dump, quik, cass
-                //    => new[] { "C:\\Portable Programs\\MAME\\mame.exe", "spec128", "-cass", path },
                 ("3DO", ".cue")
                     => new[] { "C:\\RetroArch-Win64\\retroarch.exe", "-L", "opera", path },
                 _ => null,
@@ -153,7 +169,7 @@ namespace RetroRoulette
 
         public static string gameNameFilter = "";
         public static bool MatchesFilter(string str) => gameNameFilter.Length == 0 || str.Contains(gameNameFilter, StringComparison.CurrentCultureIgnoreCase);
-        public IEnumerable<Game> FilteredGames => games.Where(game => MatchesFilter(game.name));
+        public IEnumerable<Game> FilteredGames => Enabled ? games.Where(game => MatchesFilter(game.name)) : Enumerable.Empty<Game>();
 
         public bool IsGameDir => subfolders.Count == 0;
         public IEnumerable<Game> AllGames => FilteredGames.Concat(subfolders.SelectMany(folder => folder.AllGames));
@@ -180,7 +196,7 @@ namespace RetroRoulette
         }
 
         private double weightInternal;
-        public double Weight => (Enabled && FilteredGames.Any()) ? weightInternal : 0;
+        public double Weight => FilteredGames.Any() ? weightInternal : 0;
 
         public FolderNode(string dirPath)
         {
@@ -214,7 +230,7 @@ namespace RetroRoulette
             }
         }
 
-        public Game WeightedRandomGame()
+        public Game? WeightedRandomGame()
         {
             if (IsGameDir)
             {
@@ -235,7 +251,7 @@ namespace RetroRoulette
                 }
             }
 
-            throw new Exception();
+            return null;
         }
 
         public void MultiplyWeight(double mul)
@@ -254,16 +270,16 @@ namespace RetroRoulette
     class Reel
     {
         public bool spinning;
-        private Game game;
-        public ROM rom;
+        private Game? game;
+        public ROM? rom;
 
-        public Game Game
+        public Game? Game
         {
             get { return game; }
-            set { game = value; rom = game.DefaultROM(); }
+            set { game = value; rom = (game == null) ? null : game.DefaultROM(); }
         }
 
-        public Reel(Game game)
+        public Reel(Game? game)
         {
             this.spinning = true;
             this.Game = game;
@@ -288,7 +304,8 @@ namespace RetroRoulette
 
         static FolderNode rootNode = new FolderNode("D:\\ROMs");
 
-        static bool showAdvanced = false;
+        static bool showConfig = false;
+        static bool showFinder = false;
 
         static FolderNode? nodeDraggedProgressBar = null;
 
@@ -389,7 +406,25 @@ namespace RetroRoulette
                 ImGui.SameLine();
 
                 ImGui.SetNextItemWidth(80);
-                ImGui.InputInt("##nReels", ref nReels);
+
+                if (ImGui.InputInt("##nReels", ref nReels))
+                {
+                    if (nReels <= 1)
+                        nReels = 1;
+
+                    if (reels.Any(reel => reel.spinning))
+                    {
+                        while (nReels > reels.Count)
+                        {
+                            reels.Add(new Reel(rootNode.WeightedRandomGame()));
+                        }
+
+                        while (nReels < reels.Count && reels.Last().spinning)
+                        {
+                            reels.RemoveAt(reels.Count - 1);
+                        }
+                    }
+                }
             }
 
             const float searchWidth = 300;
@@ -429,66 +464,84 @@ namespace RetroRoulette
                 {
                     i++;
 
-                    Game game = reel.Game;
+                    Game? game = reel.Game;
 
                     ImGui.TableNextRow();
 
-                    ImGui.TableNextColumn();
-
-                    if (reel.spinning)
+                    if (game != null)
                     {
-                        Vector4 color = new Vector4(0.9f, 0.3f, 0.2f, 1.0f);
-                        ImGui.PushStyleColor(ImGuiCol.Button, color);
-                        ImGui.PushStyleColor(ImGuiCol.ButtonHovered, color * 0.9f);
-                        ImGui.PushStyleColor(ImGuiCol.ButtonActive, color * 0.7f);
+                        ImGui.TableNextColumn();
 
-                        if (ImGui.Button($"##stop{i}", new Vector2(60, 60)))
+                        if (reel.spinning)
                         {
-                            reel.spinning = false;
+                            Vector4 color = new Vector4(0.9f, 0.3f, 0.2f, 1.0f);
+                            ImGui.PushStyleColor(ImGuiCol.Button, color);
+                            ImGui.PushStyleColor(ImGuiCol.ButtonHovered, color * 0.9f);
+                            ImGui.PushStyleColor(ImGuiCol.ButtonActive, color * 0.7f);
+
+                            if (ImGui.Button($"##stop{i}", new Vector2(60, 60)))
+                            {
+                                reel.spinning = false;
+                            }
+
+                            ImGui.PopStyleColor(3);
                         }
 
-                        ImGui.PopStyleColor(3);
-                    }
+                        ImGui.TableNextColumn();
+                        ImGui.PushFont(font30);
+                        if (reel.spinning)
+                        {
+                            ImGui.Text(game.name);
+                        }
+                        else
+                        {
+                            ImGui.TextWrapped(game.name);
+                        }
+                        ImGui.PopFont();
+                        ImGui.Text(game.folder.name);
 
-                    ImGui.TableNextColumn();
-                    ImGui.PushFont(font30);
-                    if (reel.spinning)
-                    {
-                        ImGui.Text(game.name);
+                        ImGui.Spacing();
+                        ImGui.Spacing();
+
+                        ImGui.TableNextColumn();
+
+                        if (!reel.spinning)
+                        {
+                            ImGui.BeginDisabled(game.roms.Count() == 1);
+
+                            if (ImGui.BeginCombo($"##options{game.folder}+{game.name}", reel.rom!.details.PropsString()))
+                            {
+                                foreach (ROM romSelectable in game.roms)
+                                {
+                                    if (ImGui.Selectable(romSelectable.details.PropsString()))
+                                    {
+                                        reel.rom = romSelectable;
+                                    }
+                                }
+
+                                ImGui.EndCombo();
+                            }
+
+                            ImGui.EndDisabled();
+
+                            if (ImGui.Button($"Play##{game.folder}+{game.name}"))
+                                reel.rom.Play();
+                        }
                     }
                     else
                     {
-                        ImGui.TextWrapped(game.name);
-                    }
-                    ImGui.PopFont();
-                    ImGui.Text(game.folder.name);
+                        ImGui.TableNextColumn();
 
-                    ImGui.Spacing();
-                    ImGui.Spacing();
+                        ImGui.TableNextColumn();
+                        ImGui.PushFont(font30);
+                        ImGui.Text("[No games match filters]");
+                        ImGui.PopFont();
+                        ImGui.Text("");
 
-                    ImGui.TableNextColumn();
+                        ImGui.Spacing();
+                        ImGui.Spacing();
 
-                    if (!reel.spinning)
-                    {
-                        ImGui.BeginDisabled(game.roms.Count() == 1);
-
-                        if (ImGui.BeginCombo($"##options{game.folder}+{game.name}", reel.rom.details.PropsString()))
-                        {
-                            foreach (ROM romSelectable in game.roms)
-                            {
-                                if (ImGui.Selectable(romSelectable.details.PropsString()))
-                                {
-                                    reel.rom = romSelectable;
-                                }
-                            }
-
-                            ImGui.EndCombo();
-                        }
-
-                        ImGui.EndDisabled();
-
-                        if (ImGui.Button($"Play##{game.folder}+{game.name}"))
-                            reel.rom.Play();
+                        ImGui.TableNextColumn();
                     }
                 }
 
@@ -498,9 +551,10 @@ namespace RetroRoulette
             // Render folder browser
 
             ImGui.SetCursorPosY(Math.Max(ImGui.GetCursorPosY(), 380));
-            ImGui.Checkbox("Advanced", ref showAdvanced);
+            ImGui.Checkbox("Show config", ref showConfig);
+            ImGui.Checkbox("Show matching games list", ref showFinder);
 
-            if (showAdvanced)
+            if (showConfig)
             {
                 ImGui.Separator();
                 ImGui.Spacing();
@@ -518,7 +572,7 @@ namespace RetroRoulette
 
                     while (foldersStack.Count > 0)
                     {
-                        if (foldersStack.Peek().TryDequeue(out FolderNode nextNode))
+                        if (foldersStack.Peek().TryDequeue(out FolderNode? nextNode))
                         {
                             ImGui.TableNextRow();
                             ImGui.TableNextColumn();
@@ -603,6 +657,24 @@ namespace RetroRoulette
                     }
 
                     ImGui.EndTable();
+                }
+            }
+
+            if (showFinder)
+            {
+                ImGui.Separator();
+                ImGui.Spacing();
+
+                if (!String.IsNullOrEmpty(FolderNode.gameNameFilter))
+                {
+                    foreach (Game game in rootNode.AllGames.Take(100))
+                    {
+                        foreach (ROM rom in game.roms)
+                        {
+                            if (ImGui.Selectable($"{Path.GetFileName(rom.path)} [{game.folder.name}]"))
+                                rom.Play();
+                        }
+                    }
                 }
             }
 
