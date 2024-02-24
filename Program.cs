@@ -648,11 +648,10 @@ namespace RetroRoulette
                         }
                         else
                         {
-                            while (foldersStack.Count > 0 && foldersStack.Peek().Count == 0)
-                            {
-                                foldersStack.Pop();
+                            foldersStack.Pop();
+
+                            if (foldersStack.Count > 0)
                                 ImGui.TreePop();
-                            }
                         }
                     }
 
