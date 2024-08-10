@@ -36,8 +36,8 @@ namespace RetroRoulette
         {
             return (folderName, Ext) switch
             {
-                // To add in order of priority:
-                //  - More PC games
+                // Ideas for stuff to add support for:
+                //  - PC games
                 //     - Windows games (old '95/'98, more modern 2000s)
                 //     - MS-DOS games
                 //     - MSX?
@@ -46,30 +46,24 @@ namespace RetroRoulette
                 //     - Macintosh (shareware?)
                 //     - Commodore 64?
                 //     - Others? ZX Spectrum?
-                //  - More PS2 games
-                //  - Japanese PS1 games?
-                //  - Support random weird systems: Game Master, GP32, Pokemon Mini, Tiger Game.com, Watara Supervision,
+                //  - MAME arcade games
+                //  - Steam games (just locally installed? need to figure out if there's a way to get the local user's full list of owned games)
+                //  - Bluemaxima Flashpoint? Open up the SQLite databse in Data/. Maybe use the main curated list as an optional filter?
+                //  - Other random weird systems: Game Master, GP32, Pokemon Mini, Tiger Game.com, Watara Supervision,
                 //    LeapFrog Leapster, VTech V.Smile, Amiga CD32, Commodore CDTV, Funtech Super A'Can, 
                 //    Atari 7800, Philips Videopac+ G7400, Sega SG-1000, Super Casette Vision, Arcadia 2001,
                 //    Atari 2600, Atari 5200, ColecoVision, Entex Adventure Vision, Fairchild Channel F, Intellivision
                 //    Magnavox Odyssey2, RCA Studio II, Vectrex, VTech Creativision. Others?
-                //  - MAME
-                //  - More PSP games
-                //  - More Xbox games
-                //  - More US games in 3DO?
-                //  - Steam games?
-                //  - Bluemaxima Flashpoint?
 
-                // TODO: .bs doesn't work
-                // TODO: get the real gbc bios
-                // TODO test all the systems
-                // TODO list roms that weren't playable
-                // TODO save weights to file?
-                // TODO allow adjusting weights of non-open nodes, just indicate they're different somehow.
-
-                // TODO: option to hide names but not systems (in reels)
-                // TODO: selector for additional flags on ROMs, and regions. E.g. only play unlicensed games, or only play Korean games
-
+                // Feature/improvement ideas:
+                // - tighten up weight adjustment UI. Maybe just need to make it less wide?
+                // - list roms that weren't playable
+                // - save weights to file?
+                // - allow adjusting weights of non-open nodes, just indicate they're different somehow.
+                // - option to hide names but not systems (in reels)
+                // - filters for additional flags on ROMs, and regions. E.g. only play unlicensed games, or only play Korean games
+                // - some way of creating custom tags/collections? would be cool to do like a "Classics of Game" night
+                // - support using no-intro, redump, etc xmls to get more info about ROMs?
 
                 ("Gamecube" or "Wii (Discs)" or "Wii (WiiWare)", ".rvz" or ".wbfs" or ".wad")
                     => new[] { "C:\\Portable Programs\\Dolphin\\Dolphin.exe", "-e", path },
@@ -317,7 +311,7 @@ namespace RetroRoulette
             // Create window, GraphicsDevice, and all resources necessary for the demo.
 
             VeldridStartup.CreateWindowAndGraphicsDevice(
-                new WindowCreateInfo(50, 50, 1280, 720, WindowState.Normal, "ImGui.NET Sample Program"),
+                new WindowCreateInfo(50, 50, 1280, 720, WindowState.Normal, "RetroRoulette"),
                 new GraphicsDeviceOptions(true, null, true, ResourceBindingModel.Improved, true, true),
                 out window,
                 out gd);
