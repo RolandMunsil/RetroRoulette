@@ -8,15 +8,38 @@ using System.Numerics;
 using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Runtime.Intrinsics.Arm;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 using System.Xml.Linq;
 using Veldrid;
+using Veldrid.MetalBindings;
 using Veldrid.Sdl2;
 using Veldrid.StartupUtilities;
 using Vulkan.Xlib;
 
 namespace RetroRoulette
 {
+    struct SavedConfig
+    {
+        public SavedConfig() { }
+
+        public struct Node
+        {
+            public string? dirPath = null;
+
+            public Node() { }
+
+            public string Name { get; set; } = "";
+            public bool Enabled { get; set; } = true;
+            public double Weight { get; set; } = 0;
+            public string? DirPath { get => dirPath; set => dirPath = value; }
+            public List<Node> ChildNodes { get; set; } = new List<Node>();
+        }
+
+        public Node RootNode { get; set; } = new Node();
+    }
+
     class ROM
     {
         public string path;
@@ -56,6 +79,7 @@ namespace RetroRoulette
                 //    Magnavox Odyssey2, RCA Studio II, Vectrex, VTech Creativision. Others?
 
                 // Feature/improvement ideas:
+                // - multithread startup
                 // - tighten up weight adjustment UI. Maybe just need to make it less wide?
                 // - list roms that weren't playable
                 // - save weights to file?
@@ -64,11 +88,13 @@ namespace RetroRoulette
                 // - filters for additional flags on ROMs, and regions. E.g. only play unlicensed games, or only play Korean games
                 // - some way of creating custom tags/collections? would be cool to do like a "Classics of Game" night
                 // - support using no-intro, redump, etc xmls to get more info about ROMs?
+                // - config specifies folder structure and folder -> node mappings
+                // - use xmls to group games with different names? maybe even group games across multiple systems?
 
                 ("Gamecube" or "Wii (Discs)" or "Wii (WiiWare)", ".rvz" or ".wbfs" or ".wad")
                     => new[] { "C:\\Portable Programs\\Dolphin\\Dolphin.exe", "-e", path },
                 ("Playstation 2", ".bin" or ".iso")
-                    => new[] { "C:\\Program Files (x86)\\PCSX2\\pcsx2.exe", path },
+                    => new[] { "C:\\Program Files\\PCSX2\\pcsx2-qt.exe", path },
                 ("Dreamcast", ".cue")
                     => new[] { "C:\\Portable Programs\\Flycast\\flycast.exe", path },
                 ("Xbox", ".iso")
@@ -125,10 +151,10 @@ namespace RetroRoulette
     class Game
     {
         public string name;
-        public FolderNode folder;
+        public GamesNode folder; // TODO remove?
         public IEnumerable<ROM> roms;
 
-        public Game(string name, FolderNode folder, IEnumerable<ROM> roms)
+        public Game(string name, GamesNode folder, IEnumerable<ROM> roms)
         {
             this.name = name;
             this.folder = folder;
@@ -153,111 +179,166 @@ namespace RetroRoulette
 
             return filteredRoms.First();
         }
+
+        public bool MatchesNameFilter(string nameFilter)
+        {
+            // TODO match against a version with no punctuation?
+
+            return nameFilter.Length == 0 || name.Contains(nameFilter, StringComparison.CurrentCultureIgnoreCase);
+        }
     }
 
-    class FolderNode
+    abstract class Node
     {
         public readonly string name;
-        public List<FolderNode> subfolders = new List<FolderNode>();
-        private List<Game> games = new List<Game>();
 
-        public static string gameNameFilter = "";
-        public static bool MatchesFilter(string str) => gameNameFilter.Length == 0 || str.Contains(gameNameFilter, StringComparison.CurrentCultureIgnoreCase);
-        public IEnumerable<Game> FilteredGames => Enabled ? games.Where(game => MatchesFilter(game.name)) : Enumerable.Empty<Game>();
+        public abstract bool Enabled { get; set; }
+        public abstract double Weight { get; set; }
+        public abstract double EffectiveWeight { get; }
 
-        public bool IsGameDir => subfolders.Count == 0;
-        public IEnumerable<Game> AllGames => FilteredGames.Concat(subfolders.SelectMany(folder => folder.AllGames));
-        public double CombinedWeight => IsGameDir ? Weight : subfolders.Sum(folder => folder.CombinedWeight);
+        public abstract IEnumerable<Game> Games { get; }
+        public IEnumerable<Game> FilteredGames => Games.Where(game => game.MatchesNameFilter(Program.gameNameFilter));
+        public bool AnyGamesMatchFilter => Games.Any(game => game.MatchesNameFilter(Program.gameNameFilter));
 
-        private bool enabledInternal;
-        public bool Enabled
+        public Node(string name)
         {
-            get
+            this.name = name;
+        }
+
+        public abstract SavedConfig.Node ToSavedConfigNode();
+    }
+
+    class GamesNode : Node
+    {
+        private readonly string dirPath;
+        private readonly List<Game> games;
+
+        public override bool Enabled { get; set; }
+        public override double Weight { get; set; }
+        public override double EffectiveWeight => (Enabled && AnyGamesMatchFilter) ? Weight : 0;
+
+        public override IEnumerable<Game> Games => games;
+
+        public GamesNode(SavedConfig.Node savedConfigNode)
+            : base(savedConfigNode.Name)
+        {
+            Debug.Assert(savedConfigNode.DirPath != null);
+            Debug.Assert(savedConfigNode.ChildNodes.Count == 0);
+
+            dirPath = savedConfigNode.DirPath;
+
+            games = Directory.EnumerateFiles(dirPath, "*", SearchOption.AllDirectories)
+                .Where(filePath => !ROMNameParser.IsBios(filePath))
+                .Select(filePath => new ROM(filePath, name))
+                .Where(rom => rom.CanPlay)
+                .GroupBy(rom => rom.details.name)
+                .Select(grouping => new Game(grouping.Key, this, grouping))
+                .ToList();
+
+            Enabled = savedConfigNode.Enabled;
+            Weight = savedConfigNode.Weight;
+
+            // TODO prevent enabling if games.Count == 0;
+
+            if (games.Count == 0)
             {
-                return IsGameDir ? enabledInternal : subfolders.Any(folder => folder.Enabled);
+                Enabled = false;
             }
+
+            if (Weight == 0)
+            {
+                Weight = games.Count;
+            }
+        }
+
+        public override SavedConfig.Node ToSavedConfigNode()
+        {
+            SavedConfig.Node node = new SavedConfig.Node();
+            node.Name = name;
+            node.Enabled = Enabled;
+            node.Weight = Weight;
+            node.DirPath = dirPath;
+            return node;
+        }
+    }
+
+    class GroupNode : Node
+    {
+        public List<Node> subNodes;
+
+        public override bool Enabled
+        {
+            get => subNodes.Any(subNode => subNode.Enabled);
+            set => subNodes.ForEach(subNode => subNode.Enabled = value);
+        }
+
+        public override double Weight
+        {
+            get => subNodes.Sum(subNode => subNode.Weight);
             set
             {
-                if (IsGameDir)
+                double mulFactor = value / Weight;
+                subNodes.ForEach(subNode => subNode.Weight *= mulFactor);
+            }
+        }
+
+        public override double EffectiveWeight => Enabled ? subNodes.Sum(subNode => subNode.EffectiveWeight) : 0;
+
+        public override IEnumerable<Game> Games => subNodes.SelectMany(subNode => subNode.Games);
+
+        public GroupNode(SavedConfig.Node savedConfigNode)
+            : base(savedConfigNode.Name)
+        {
+            Debug.Assert(savedConfigNode.DirPath == null);
+            Debug.Assert(savedConfigNode.ChildNodes.Count != 0);
+
+            subNodes = new List<Node>();
+
+            foreach (SavedConfig.Node childNode in savedConfigNode.ChildNodes)
+            {
+                if (childNode.DirPath == null)
                 {
-                    enabledInternal = value;
+                    subNodes.Add(new GroupNode(childNode));
                 }
                 else
                 {
-                    subfolders.ForEach(subfolder => subfolder.Enabled = value);
+                    subNodes.Add(new GamesNode(childNode));
                 }
             }
         }
 
-        private double weightInternal;
-        public double Weight => FilteredGames.Any() ? weightInternal : 0;
-
-        public FolderNode(string dirPath)
+        public override SavedConfig.Node ToSavedConfigNode()
         {
-            this.name = dirPath.Split(Path.DirectorySeparatorChar).Last();
-            Populate(dirPath);
-
-            enabledInternal = true;
-            weightInternal = games.Count;
+            SavedConfig.Node node = new SavedConfig.Node();
+            node.Name = name;
+            node.ChildNodes = subNodes.Select(subNode => subNode.ToSavedConfigNode()).ToList();
+            return node;
         }
 
-        private void Populate(string dirPath)
+        public Game? WeightedFilteredRandomGame()
         {
-            if (File.Exists(Path.Combine(dirPath, "_noroms_tree.rrt")))
-                return;
-
-            if (File.Exists(Path.Combine(dirPath, "_noroms.rrt")))
-            {
-                subfolders = Directory.GetDirectories(dirPath)
-                    .Select(dir => new FolderNode(dir))
-                    .Where(node => node.subfolders.Count > 0 || node.games.Count > 0).ToList();
-            }
-            else
-            {
-                games = Directory.EnumerateFiles(dirPath, "*", SearchOption.AllDirectories)
-                    .Where(filePath => !ROMNameParser.IsBios(filePath))
-                    .Select(filePath => new ROM(filePath, name))
-                    .Where(rom => rom.CanPlay)
-                    .GroupBy(rom => rom.details.name)
-                    .Select(grouping => new Game(grouping.Key, this, grouping))
-                    .ToList();
-            }
-        }
-
-        public Game? WeightedRandomGame()
-        {
-            if (IsGameDir)
-            {
-                List<Game> filteredGames = FilteredGames.ToList();
-                return filteredGames[Random.Shared.Next(filteredGames.Count - 1)];
-            }
-
-            double next = Random.Shared.NextDouble() * CombinedWeight;
+            double next = Random.Shared.NextDouble() * EffectiveWeight;
             double total = 0;
 
-            foreach (FolderNode node in subfolders)
+            foreach (Node node in subNodes)
             {
-                total += node.CombinedWeight;
+                total += node.EffectiveWeight;
 
                 if (next < total)
                 {
-                    return node.WeightedRandomGame();
+                    if (node is GamesNode gamesNode)
+                    {
+                        List<Game> games = gamesNode.FilteredGames.ToList();
+                        return games[Random.Shared.Next(games.Count - 1)];
+                    }
+                    else if (node is GroupNode groupNode)
+                    {
+                        return groupNode.WeightedFilteredRandomGame();
+                    }
                 }
             }
 
             return null;
-        }
-
-        public void MultiplyWeight(double mul)
-        {
-            if (IsGameDir)
-            {
-                weightInternal *= mul;
-            }
-            else
-            {
-                subfolders.ForEach(folder => folder.MultiplyWeight(mul));
-            }
         }
     }
 
@@ -296,15 +377,19 @@ namespace RetroRoulette
 
         // Config
 
-        static FolderNode rootNode = new FolderNode("D:\\ROMs");
+        static GroupNode rootNode;
+        static SavedConfig savedConfig;
+        public static string gameNameFilter = "";
 
-        static bool showConfig = false;
-        static bool showFinder = false;
-
-        static FolderNode? nodeDraggedProgressBar = null;
+        static Node? nodeDraggedProgressBar = null;
 
         static void Main(string[] args)
         {
+            string jsonSavedConfig = File.ReadAllText("rr_config.txt");
+            savedConfig = JsonSerializer.Deserialize<SavedConfig>(jsonSavedConfig);
+
+            rootNode = new GroupNode(savedConfig.RootNode);
+
             Sdl2Window window;
             GraphicsDevice gd;
 
@@ -358,12 +443,21 @@ namespace RetroRoulette
                 gd.SwapBuffers(gd.MainSwapchain);
             }
 
+
+            savedConfig.RootNode = rootNode.ToSavedConfigNode();
+            string jsonSavedConfigWrite = JsonSerializer.Serialize(savedConfig, new JsonSerializerOptions { WriteIndented = true });
+            File.WriteAllText("rr_config.txt", jsonSavedConfigWrite);
+
             // Clean up Veldrid resources
             gd.WaitForIdle();
             controller.Dispose();
             cl.Dispose();
             gd.Dispose();
         }
+
+        static string browserSearch = "";
+
+        static bool showSelectionConfig = false;
 
         static void UIUpdate()
         {
@@ -372,305 +466,421 @@ namespace RetroRoulette
             ImGui.SetNextWindowSize(viewportptr.WorkSize);
             ImGui.SetNextWindowViewport(viewportptr.ID);
 
-            ImGui.Begin("Main", ImGuiWindowFlags.NoTitleBar | ImGuiWindowFlags.NoResize | ImGuiWindowFlags.NoMove);
-
+            if (ImGui.Begin("Main", ImGuiWindowFlags.NoTitleBar | ImGuiWindowFlags.NoResize | ImGuiWindowFlags.NoMove))
             {
-                ImGui.PushFont(font40);
-                ImGui.PushStyleVar(ImGuiStyleVar.FramePadding, ImGui.GetStyle().FramePadding * 2);
-                ImGui.BeginDisabled(reels.Any(reel => reel.spinning));
-
-                float buttonsSize = ImGui.CalcTextSize("Spin").X + ImGui.GetStyle().FramePadding.X * 2;
-                ImGui.SetCursorPosX(ImGui.GetCursorPosX() + (ImGui.GetContentRegionAvail().X / 2 - buttonsSize / 2));
-                if (ImGui.Button("Spin"))
+                if (ImGui.BeginTabBar("tabs"))
                 {
-                    reels.Clear();
-
-                    for (int i = 0; i < nReels; i++)
+                    if (ImGui.BeginTabItem("Browser"))
                     {
-                        reels.Add(new Reel(rootNode.WeightedRandomGame()));
-                    }
+                        const float searchWidth = 300;
+                        ImGui.SetCursorPosX(ImGui.GetCursorPosX() + (ImGui.GetContentRegionAvail().X / 2 - searchWidth / 2));
+                        ImGui.SetNextItemWidth(searchWidth);
+                        ImGui.InputText("##search", ref browserSearch, 128);
 
-                    nextSpinTick = appStopwatch.Elapsed.TotalSeconds;
-                }
+                        List<Game> matchingGames = rootNode.Games.Where(game => game.MatchesNameFilter(browserSearch)).ToList(); // TODO this is using the filter!
 
-                ImGui.EndDisabled();
-                ImGui.PopStyleVar();
-                ImGui.PopFont();
+                        ImGui.SameLine();
+                        ImGui.Text($"{matchingGames.Count}");
 
-                ImGui.SameLine();
-
-                ImGui.SetNextItemWidth(80);
-
-                if (ImGui.InputInt("##nReels", ref nReels))
-                {
-                    if (nReels <= 1)
-                        nReels = 1;
-
-                    if (reels.Any(reel => reel.spinning))
-                    {
-                        while (nReels > reels.Count)
+                        if (ImGui.BeginTable("matches", 2, ImGuiTableFlags.ScrollY)) // TODO first col width
                         {
-                            reels.Add(new Reel(rootNode.WeightedRandomGame()));
-                        }
+                            const int maxDisplayed = 100;
 
-                        while (nReels < reels.Count && reels.Last().spinning)
-                        {
-                            reels.RemoveAt(reels.Count - 1);
-                        }
-                    }
-                }
-            }
-
-            const float searchWidth = 300;
-            ImGui.SetCursorPosX(ImGui.GetCursorPosX() + (ImGui.GetContentRegionAvail().X / 2 - searchWidth / 2));
-            ImGui.SetNextItemWidth(searchWidth);
-            ImGui.InputText("##search", ref FolderNode.gameNameFilter, 128);
-            ImGui.SameLine();
-            ImGui.Text($"{rootNode.AllGames.Count()}");
-
-            if (reels.Any(reel => reel.spinning) && appStopwatch.Elapsed.TotalSeconds >= nextSpinTick)
-            {
-                foreach (Reel reel in reels)
-                {
-                    if (reel.spinning)
-                    {
-                        reel.Game = rootNode.WeightedRandomGame();
-                    }
-                }
-
-                nextSpinTick = appStopwatch.Elapsed.TotalSeconds + spinTickTime;
-            }
-
-            const int stopColWidth = 90;
-            const int nameColWidth = 400;
-
-            ImGui.SetCursorPosX(ImGui.GetCursorPosX() + (ImGui.GetContentRegionAvail().X / 2 - nameColWidth / 2) - stopColWidth);
-
-            if (ImGui.BeginTable("roms", 3))
-            {
-                ImGui.TableSetupColumn("##stop", ImGuiTableColumnFlags.WidthFixed, stopColWidth);
-                ImGui.TableSetupColumn("##name", ImGuiTableColumnFlags.WidthFixed, nameColWidth);
-                ImGui.TableSetupColumn("##button", ImGuiTableColumnFlags.WidthFixed, 300);
-
-                int i = 0;
-
-                foreach (Reel reel in reels)
-                {
-                    i++;
-
-                    Game? game = reel.Game;
-
-                    ImGui.TableNextRow();
-
-                    if (game != null)
-                    {
-                        ImGui.TableNextColumn();
-
-                        if (reel.spinning)
-                        {
-                            Vector4 color = new Vector4(0.9f, 0.3f, 0.2f, 1.0f);
-                            ImGui.PushStyleColor(ImGuiCol.Button, color);
-                            ImGui.PushStyleColor(ImGuiCol.ButtonHovered, color * 0.9f);
-                            ImGui.PushStyleColor(ImGuiCol.ButtonActive, color * 0.7f);
-
-                            if (ImGui.Button($"##stop{i}", new Vector2(60, 60)))
+                            foreach (Game game in matchingGames.Take(maxDisplayed)) // TODO allow more
                             {
-                                reel.spinning = false;
+                                foreach (ROM rom in game.roms)
+                                {
+                                    ImGui.TableNextRow();
+
+                                    ImGui.TableNextColumn();
+
+                                    ImGui.TextUnformatted(game.folder.name);
+
+                                    ImGui.TableNextColumn();
+
+                                    if (ImGui.Selectable(Path.GetFileName(rom.path)))
+                                        rom.Play();
+                                }
                             }
 
-                            ImGui.PopStyleColor(3);
+                            ImGui.EndTable();
                         }
 
-                        ImGui.TableNextColumn();
-                        ImGui.PushFont(font30);
-                        if (reel.spinning)
+                        // TODO "copy to roulette"
+
+                        ImGui.EndTabItem();
+                    }
+
+                    if (ImGui.BeginTabItem("Roulette"))
+                    {
+                        bool showSelectionConfigThisFrame = showSelectionConfig;
+
+                        if (showSelectionConfigThisFrame)
                         {
-                            ImGui.Text(game.name);
+                            ImGui.BeginChild("roulette", new Vector2(ImGui.GetContentRegionAvail().X / 2, ImGui.GetContentRegionAvail().Y), ImGuiChildFlags.ResizeX);
                         }
-                        else
+
+                        Vector2 rouletteTopRight = ImGui.GetCursorPos() + new Vector2(ImGui.GetContentRegionAvail().X, 0);
+
                         {
-                            ImGui.TextWrapped(game.name);
-                        }
-                        ImGui.PopFont();
-                        ImGui.Text(game.folder.name);
+                            ImGui.PushFont(font40);
+                            ImGui.PushStyleVar(ImGuiStyleVar.FramePadding, ImGui.GetStyle().FramePadding * 2);
+                            ImGui.BeginDisabled(reels.Any(reel => reel.spinning));
 
-                        ImGui.Spacing();
-                        ImGui.Spacing();
-
-                        ImGui.TableNextColumn();
-
-                        if (!reel.spinning)
-                        {
-                            ImGui.BeginDisabled(game.roms.Count() == 1);
-
-                            if (ImGui.BeginCombo($"##options{game.folder}+{game.name}", reel.rom!.details.PropsString()))
+                            float buttonsSize = ImGui.CalcTextSize("Spin").X + ImGui.GetStyle().FramePadding.X * 2;
+                            ImGui.SetCursorPosX(ImGui.GetCursorPosX() + (ImGui.GetContentRegionAvail().X / 2 - buttonsSize / 2));
+                            if (ImGui.Button("Spin"))
                             {
-                                foreach (ROM romSelectable in game.roms)
+                                reels.Clear();
+
+                                for (int i = 0; i < nReels; i++)
                                 {
-                                    if (ImGui.Selectable(romSelectable.details.PropsString()))
-                                    {
-                                        reel.rom = romSelectable;
-                                    }
+                                    reels.Add(new Reel(rootNode.WeightedFilteredRandomGame()));
                                 }
 
-                                ImGui.EndCombo();
+                                nextSpinTick = appStopwatch.Elapsed.TotalSeconds;
                             }
 
                             ImGui.EndDisabled();
+                            ImGui.PopStyleVar();
+                            ImGui.PopFont();
 
-                            if (ImGui.Button($"Play##{game.folder}+{game.name}"))
-                                reel.rom.Play();
-                        }
-                    }
-                    else
-                    {
-                        ImGui.TableNextColumn();
+                            ImGui.SameLine();
 
-                        ImGui.TableNextColumn();
-                        ImGui.PushFont(font30);
-                        ImGui.Text("[No games match filters]");
-                        ImGui.PopFont();
-                        ImGui.Text("");
+                            ImGui.SetNextItemWidth(80);
 
-                        ImGui.Spacing();
-                        ImGui.Spacing();
-
-                        ImGui.TableNextColumn();
-                    }
-                }
-
-                ImGui.EndTable();
-            }
-
-            // Render folder browser
-
-            ImGui.SetCursorPosY(Math.Max(ImGui.GetCursorPosY(), 380));
-            ImGui.Checkbox("Show config", ref showConfig);
-            ImGui.Checkbox("Show matching games list", ref showFinder);
-
-            if (showConfig)
-            {
-                ImGui.Separator();
-                ImGui.Spacing();
-
-                if (ImGui.BeginTable("table", 3))
-                {
-                    ImGui.TableSetupColumn("##name", ImGuiTableColumnFlags.WidthFixed, 250);
-                    ImGui.TableSetupColumn("##enable", ImGuiTableColumnFlags.WidthFixed, 25);
-                    ImGui.TableSetupColumn("##bar", ImGuiTableColumnFlags.WidthStretch);
-
-                    double weightTotal = rootNode.CombinedWeight;
-
-                    Stack<Queue<FolderNode>> foldersStack = new Stack<Queue<FolderNode>>();
-                    foldersStack.Push(new Queue<FolderNode>(rootNode.subfolders));
-
-                    while (foldersStack.Count > 0)
-                    {
-                        if (foldersStack.Peek().TryDequeue(out FolderNode? nextNode))
-                        {
-                            ImGui.TableNextRow();
-                            ImGui.TableNextColumn();
-
-                            bool nodeOpen = false;
-
-                            if (nextNode.IsGameDir)
+                            if (ImGui.InputInt("##nReels", ref nReels))
                             {
-                                if (ImGui.IsKeyDown(ImGuiKey.ModCtrl))
-                                {
-                                    if (ImGui.TreeNode(nextNode.name))
-                                    {
-                                        foreach (Game game in nextNode.FilteredGames)
-                                        {
-                                            if (ImGui.TreeNode($"{game.name}"))
-                                            {
-                                                foreach (ROM rom in game.roms)
-                                                {
-                                                    if (ImGui.Selectable(Path.GetFileName(rom.path)))
-                                                        rom.Play();
-                                                }
+                                if (nReels <= 1)
+                                    nReels = 1;
 
-                                                ImGui.TreePop();
-                                            }
+                                if (reels.Any(reel => reel.spinning))
+                                {
+                                    while (nReels > reels.Count)
+                                    {
+                                        reels.Add(new Reel(rootNode.WeightedFilteredRandomGame()));
+                                    }
+
+                                    while (nReels < reels.Count && reels.Last().spinning)
+                                    {
+                                        reels.RemoveAt(reels.Count - 1);
+                                    }
+                                }
+                            }
+                        }
+
+                        const float searchWidth = 300;
+                        ImGui.SetCursorPosX(ImGui.GetCursorPosX() + (ImGui.GetContentRegionAvail().X / 2 - searchWidth / 2));
+                        ImGui.SetNextItemWidth(searchWidth);
+                        ImGui.InputText("##search", ref gameNameFilter, 128);
+                        ImGui.SameLine();
+                        ImGui.Text($"{rootNode.FilteredGames.Count()}");
+
+                        if (reels.Any(reel => reel.spinning) && appStopwatch.Elapsed.TotalSeconds >= nextSpinTick)
+                        {
+                            foreach (Reel reel in reels)
+                            {
+                                if (reel.spinning)
+                                {
+                                    reel.Game = rootNode.WeightedFilteredRandomGame();
+                                }
+                            }
+
+                            nextSpinTick = appStopwatch.Elapsed.TotalSeconds + spinTickTime;
+                        }
+
+                        const int stopColWidth = 90;
+                        const int nameColWidth = 400;
+
+                        ImGui.SetCursorPosX(ImGui.GetCursorPosX() + (ImGui.GetContentRegionAvail().X / 2 - nameColWidth / 2) - stopColWidth);
+
+                        if (ImGui.BeginTable("roms", 3))
+                        {
+                            ImGui.TableSetupColumn("##stop", ImGuiTableColumnFlags.WidthFixed, stopColWidth);
+                            ImGui.TableSetupColumn("##name", ImGuiTableColumnFlags.WidthFixed, nameColWidth);
+                            ImGui.TableSetupColumn("##button", ImGuiTableColumnFlags.WidthFixed, 300);
+
+                            int i = 0;
+
+                            foreach (Reel reel in reels)
+                            {
+                                i++;
+
+                                Game? game = reel.Game;
+
+                                ImGui.TableNextRow();
+
+                                if (game != null)
+                                {
+                                    ImGui.TableNextColumn();
+
+                                    if (reel.spinning)
+                                    {
+                                        Vector4 color = new Vector4(0.9f, 0.3f, 0.2f, 1.0f);
+                                        ImGui.PushStyleColor(ImGuiCol.Button, color);
+                                        ImGui.PushStyleColor(ImGuiCol.ButtonHovered, color * 0.9f);
+                                        ImGui.PushStyleColor(ImGuiCol.ButtonActive, color * 0.7f);
+
+                                        if (ImGui.Button($"##stop{i}", new Vector2(60, 60)))
+                                        {
+                                            reel.spinning = false;
                                         }
 
-                                        ImGui.TreePop();
+                                        ImGui.PopStyleColor(3);
+                                    }
+
+                                    ImGui.TableNextColumn();
+                                    ImGui.PushFont(font30);
+                                    if (reel.spinning)
+                                    {
+                                        ImGui.Text(game.name);
+                                    }
+                                    else
+                                    {
+                                        ImGui.TextWrapped(game.name);
+                                    }
+                                    ImGui.PopFont();
+                                    ImGui.Text(game.folder.name);
+
+                                    ImGui.Spacing();
+                                    ImGui.Spacing();
+
+                                    ImGui.TableNextColumn();
+
+                                    if (!reel.spinning)
+                                    {
+                                        ImGui.BeginDisabled(game.roms.Count() == 1);
+
+                                        if (ImGui.BeginCombo($"##options{game.folder}+{game.name}", reel.rom!.details.PropsString()))
+                                        {
+                                            foreach (ROM romSelectable in game.roms)
+                                            {
+                                                if (ImGui.Selectable(romSelectable.details.PropsString()))
+                                                {
+                                                    reel.rom = romSelectable;
+                                                }
+                                            }
+
+                                            ImGui.EndCombo();
+                                        }
+
+                                        ImGui.EndDisabled();
+
+                                        if (ImGui.Button($"Play##{game.folder}+{game.name}"))
+                                            reel.rom.Play();
                                     }
                                 }
                                 else
                                 {
-                                    ImGui.TreeNodeEx(nextNode.name, ImGuiTreeNodeFlags.Leaf | ImGuiTreeNodeFlags.NoTreePushOnOpen);
+                                    ImGui.TableNextColumn();
+
+                                    ImGui.TableNextColumn();
+                                    ImGui.PushFont(font30);
+                                    ImGui.Text("[No games match filters]");
+                                    ImGui.PopFont();
+                                    ImGui.Text("");
+
+                                    ImGui.Spacing();
+                                    ImGui.Spacing();
+
+                                    ImGui.TableNextColumn();
                                 }
                             }
-                            else
+
+                            ImGui.EndTable();
+                        }
+
+                        // Show/hide selection config button
+                        {
+                            Vector2 cursorPosBefore = ImGui.GetCursorPos();
+
+                            ImGui.SetCursorPos(rouletteTopRight + new Vector2(-50, 0));
+
+                            if (ImGui.Button(showSelectionConfigThisFrame ? ">" : "<", new Vector2(50, 50)))
                             {
-                                if (ImGui.TreeNode(nextNode.name))
+                                showSelectionConfig = !showSelectionConfig;
+                            }
+
+                            ImGui.SetCursorPos(cursorPosBefore);
+                        }
+
+                        if (showSelectionConfigThisFrame)
+                        {
+                            ImGui.EndChild();
+
+                            ImGui.SameLine(0, 0);
+
+                            ImGui.PushStyleColor(ImGuiCol.ChildBg, new Vector4(0.07f, 0.07f, 0.07f, 1.0f));
+
+                            if (ImGui.BeginChild("selectionconfig", ImGui.GetContentRegionAvail()))
+                            {
+                                if (ImGui.BeginTable("nodetree", 3))
                                 {
-                                    nodeOpen = true;
-                                    foldersStack.Push(new Queue<FolderNode>(nextNode.subfolders));
+                                    ImGui.TableSetupColumn("##name", ImGuiTableColumnFlags.WidthFixed, 250);
+                                    ImGui.TableSetupColumn("##enable", ImGuiTableColumnFlags.WidthFixed, 25);
+                                    ImGui.TableSetupColumn("##bar", ImGuiTableColumnFlags.WidthStretch);
+
+                                    double weightTotal = rootNode.EffectiveWeight;
+
+                                    Stack<Queue<Node>> foldersStack = new Stack<Queue<Node>>();
+                                    foldersStack.Push(new Queue<Node>(rootNode.subNodes));
+
+                                    while (foldersStack.Count > 0)
+                                    {
+                                        if (foldersStack.Peek().TryDequeue(out Node? nextNode))
+                                        {
+                                            ImGui.TableNextRow();
+                                            ImGui.TableNextColumn();
+
+                                            bool nodeOpen = false;
+
+                                            if (nextNode is GamesNode gamesNode)
+                                            {
+                                                ImGui.TreeNodeEx(nextNode.name, ImGuiTreeNodeFlags.Leaf | ImGuiTreeNodeFlags.NoTreePushOnOpen);
+                                            }
+                                            else if (nextNode is GroupNode groupNode)
+                                            {
+                                                if (ImGui.TreeNode(groupNode.name))
+                                                {
+                                                    nodeOpen = true;
+                                                    foldersStack.Push(new Queue<Node>(groupNode.subNodes));
+                                                }
+                                            }
+
+                                            ImGui.TableNextColumn();
+
+                                            bool enabled = nextNode.Enabled;
+                                            if (ImGui.Checkbox($"##{nextNode.name}", ref enabled))
+                                            {
+                                                nextNode.Enabled = enabled;
+                                            }
+
+                                            ImGui.TableNextColumn();
+
+                                            if (nodeOpen) // TODO maybe hiding was the right thing instead of this?
+                                            {
+                                                ImGui.PushStyleColor(ImGuiCol.PlotHistogram, new Vector4(0.2f, 0.2f, 0.2f, 1.0f));
+                                                ImGui.PushStyleColor(ImGuiCol.FrameBg, new Vector4(0.1f, 0.1f, 0.1f, 1.0f));
+                                                ImGui.PushStyleColor(ImGuiCol.Text, new Vector4(0.4f, 0.4f, 0.4f, 1.0f));
+                                            }
+
+                                            double weightFraction = nextNode.EffectiveWeight / weightTotal;
+
+                                            string display = $"{100 * weightFraction:f1}% ({nextNode.FilteredGames.Count()} games)";
+
+                                            ImGui.ProgressBar((float)weightFraction, new Vector2(-10, 0f), nextNode.Enabled ? display : "(disabled)");
+
+                                            if (ImGui.IsItemClicked(ImGuiMouseButton.Left))
+                                                nodeDraggedProgressBar = nextNode;
+
+                                            if (ImGui.IsMouseReleased(ImGuiMouseButton.Left))
+                                                nodeDraggedProgressBar = null;
+
+                                            if (nodeDraggedProgressBar == nextNode)
+                                                nextNode.Weight *= Math.Pow(1.01, ImGui.GetIO().MouseDelta.X);
+
+                                            if (nodeOpen)
+                                            {
+                                                ImGui.PopStyleColor();
+                                                ImGui.PopStyleColor();
+                                                ImGui.PopStyleColor();
+                                            }
+                                        }
+                                        else
+                                        {
+                                            foldersStack.Pop();
+
+                                            if (foldersStack.Count > 0)
+                                                ImGui.TreePop();
+                                        }
+                                    }
+
+                                    ImGui.EndTable();
                                 }
                             }
 
-                            ImGui.TableNextColumn();
+                            ImGui.PopStyleColor();
 
-                            bool enabled = nextNode.Enabled;
-                            if (ImGui.Checkbox($"##{nextNode.name}", ref enabled))
-                            {
-                                nextNode.Enabled = enabled;
-                            }
-
-                            ImGui.TableNextColumn();
-
-                            if (!nodeOpen)
-                            {
-                                //ImGui.PushStyleColor(ImGuiCol.PlotHistogram)
-
-                                double weightFraction = nextNode.CombinedWeight / weightTotal;
-
-                                string display = $"{100 * weightFraction:f1}% ({nextNode.AllGames.Count()} games)";
-
-                                ImGui.ProgressBar((float)weightFraction, new Vector2(-10, 0f), nextNode.Enabled ? display : "(disabled)");
-
-                                if (ImGui.IsItemClicked(ImGuiMouseButton.Left))
-                                    nodeDraggedProgressBar = nextNode;
-
-                                if (ImGui.IsMouseReleased(ImGuiMouseButton.Left))
-                                    nodeDraggedProgressBar = null;
-
-                                if (nodeDraggedProgressBar == nextNode)
-                                    nextNode.MultiplyWeight(Math.Pow(1.01, ImGui.GetIO().MouseDelta.X));
-                            }
+                            ImGui.EndChild();
                         }
-                        else
-                        {
-                            foldersStack.Pop();
 
-                            if (foldersStack.Count > 0)
-                                ImGui.TreePop();
-                        }
+                        ImGui.EndTabItem();
                     }
 
-                    ImGui.EndTable();
-                }
-            }
-
-            if (showFinder)
-            {
-                ImGui.Separator();
-                ImGui.Spacing();
-
-                if (!String.IsNullOrEmpty(FolderNode.gameNameFilter))
-                {
-                    foreach (Game game in rootNode.AllGames.Take(100))
+                    if (ImGui.BeginTabItem("Config"))
                     {
-                        foreach (ROM rom in game.roms)
+                        if (ImGui.BeginTable("nodetree", 2))
                         {
-                            if (ImGui.Selectable($"{Path.GetFileName(rom.path)} [{game.folder.name}]"))
-                                rom.Play();
+                            //ImGui.TableSetupColumn("##del", ImGuiTableColumnFlags.WidthFixed | ImGuiTableColumnFlags.IndentDisable, 25);
+                            //ImGui.TableSetupColumn("##up", ImGuiTableColumnFlags.WidthFixed | ImGuiTableColumnFlags.IndentDisable, 25);
+                            //ImGui.TableSetupColumn("##down", ImGuiTableColumnFlags.WidthFixed | ImGuiTableColumnFlags.IndentDisable, 25);
+                            ImGui.TableSetupColumn("name", ImGuiTableColumnFlags.WidthFixed | ImGuiTableColumnFlags.IndentEnable, 250);
+                            ImGui.TableSetupColumn("props", ImGuiTableColumnFlags.WidthStretch);
+
+                            Stack<Queue<SavedConfig.Node>> foldersStack = new Stack<Queue<SavedConfig.Node>>();
+                            foldersStack.Push(new Queue<SavedConfig.Node>(savedConfig.RootNode.ChildNodes));
+
+                            while (foldersStack.Count > 0)
+                            {
+                                if (foldersStack.Peek().TryDequeue(out SavedConfig.Node nextNode))
+                                {
+                                    ImGui.TableNextRow();
+
+                                    //float btnHeight = ImGui.CalcTextSize("^").Y + ImGui.GetStyle().FramePadding.Y * 2;
+
+                                    //ImGui.TableNextColumn();
+
+                                    //ImGui.Button("-", new Vector2(btnHeight, 0));
+
+                                    //ImGui.TableNextColumn();
+
+                                    //ImGui.Button("^", new Vector2(btnHeight, 0));
+
+                                    //ImGui.TableNextColumn();
+
+                                    //ImGui.Button("v", new Vector2(btnHeight, 0));
+
+                                    
+
+                                    if (nextNode.ChildNodes.Count == 0)
+                                    {
+                                        ImGui.TableNextColumn();
+                                        ImGui.TreeNodeEx(nextNode.Name, ImGuiTreeNodeFlags.Leaf | ImGuiTreeNodeFlags.NoTreePushOnOpen);
+
+                                        ImGui.TableNextColumn();
+
+                                        ImGui.InputText($"##folderpath_{nextNode.Name}", ref nextNode.dirPath, 512);
+                                    }
+                                    else
+                                    {
+                                        ImGui.TableNextColumn();
+
+                                        if (ImGui.TreeNode(nextNode.Name))
+                                        {
+                                            foldersStack.Push(new Queue<SavedConfig.Node>(nextNode.ChildNodes));
+                                        }
+
+                                        ImGui.TableNextColumn();
+                                    }
+                                }
+                                else
+                                {
+                                    foldersStack.Pop();
+
+                                    if (foldersStack.Count > 0)
+                                        ImGui.TreePop();
+                                }
+                            }
+
+                            ImGui.EndTable();
                         }
+
+                        ImGui.EndTabItem();
                     }
+
+                    ImGui.EndTabBar();
                 }
             }
-
             ImGui.End();
         }
     }
