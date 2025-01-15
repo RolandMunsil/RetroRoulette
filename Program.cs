@@ -18,6 +18,7 @@ using Veldrid.MetalBindings;
 using Veldrid.Sdl2;
 using Veldrid.StartupUtilities;
 using Vulkan.Xlib;
+using static RetroRoulette.SavedConfig;
 
 namespace RetroRoulette
 {
@@ -26,23 +27,58 @@ namespace RetroRoulette
         [JsonPolymorphic(TypeDiscriminatorPropertyName = "Type")]
         [JsonDerivedType(typeof(GamesNode), "FileFolder")]
         [JsonDerivedType(typeof(GroupNode), "Group")]
-        public class Node  { }
+        public class Node 
+        {
+            public int id = 0;
+            private string name = "";
+
+            [JsonPropertyOrder(-1)]
+            public string Name { get => name; set => name = value; }
+
+            [JsonIgnore]
+            public ref string NameEditable => ref name;
+        }
 
         public class GamesNode : Node
         {
-            public string Name { get; set; } = "";
-            public string DirPath { get; set; } = "";
+            private string dirPath = "";
+
+            public string DirPath { get => dirPath; set => dirPath = value; }
             public bool Enabled { get; set; } = true;
             public double Weight { get; set; } = 0;
+
+            [JsonIgnore]
+            public ref string DirPathEditable => ref dirPath;
         }
 
         public class GroupNode : Node
         {
-            public string Name { get; set; } = "";
             public List<Node> ChildNodes { get; set; } = new List<Node>();
         }
 
-        public GroupNode RootNode { get; set; } = new GroupNode();
+        public GroupNode RootNode { get; set; } = new GroupNode(); // TODO how do we handle first time starting up when this is the only node
+
+        /////////////////////////////////////////////////////////////////////////
+
+        public void InitIds()
+        {
+            int nextId = 1;
+            InitIdsInternal(RootNode, ref nextId);
+        }
+
+        private static void InitIdsInternal(Node node, ref int nextId)
+        {
+            Debug.Assert(node.id == 0);
+            node.id = nextId++;
+
+            if (node is GroupNode groupNode)
+            {
+                foreach (Node childNode in groupNode.ChildNodes)
+                {
+                    InitIdsInternal(childNode, ref nextId);
+                }
+            }
+        }
     }
 
     class ROM
@@ -85,15 +121,11 @@ namespace RetroRoulette
 
                 // Feature/improvement ideas:
                 // - multithread startup
-                // - tighten up weight adjustment UI. Maybe just need to make it less wide?
                 // - list roms that weren't playable
-                // - save weights to file?
-                // - allow adjusting weights of non-open nodes, just indicate they're different somehow.
                 // - option to hide names but not systems (in reels)
                 // - filters for additional flags on ROMs, and regions. E.g. only play unlicensed games, or only play Korean games
                 // - some way of creating custom tags/collections? would be cool to do like a "Classics of Game" night
                 // - support using no-intro, redump, etc xmls to get more info about ROMs?
-                // - config specifies folder structure and folder -> node mappings
                 // - use xmls to group games with different names? maybe even group games across multiple systems?
 
                 ("Gamecube" or "Wii (Discs)" or "Wii (WiiWare)", ".rvz" or ".wbfs" or ".wad")
@@ -116,7 +148,6 @@ namespace RetroRoulette
                 (_, ".z64" or ".ndd" or ".sfc" or ".st" or ".bs" or ".32x" or ".sc" or ".ws" or ".wsc" or ".ngc" or ".ngp")
                 or ("Sega Master System", ".sms")
                 or ("Sega CD", ".cue")
-                or (not "Sega PICO", ".md")
                     => new[] { "C:\\Portable Programs\\ares-v132\\ares.exe", path },
                 (_, ".j64")
                     => new[] { "C:\\Portable Programs\\BigPEmu\\BigPEmu.exe", path },
@@ -195,6 +226,7 @@ namespace RetroRoulette
 
     abstract class Node
     {
+        public readonly int id;
         public readonly string name;
 
         public abstract bool Enabled { get; set; }
@@ -205,8 +237,9 @@ namespace RetroRoulette
         public IEnumerable<Game> FilteredGames => Games.Where(game => game.MatchesNameFilter(Program.gameNameFilter));
         public bool AnyGamesMatchFilter => Games.Any(game => game.MatchesNameFilter(Program.gameNameFilter));
 
-        public Node(string name)
+        public Node(int id, string name)
         {
+            this.id = id;
             this.name = name;
         }
 
@@ -225,7 +258,7 @@ namespace RetroRoulette
         public override IEnumerable<Game> Games => games;
 
         public GamesNode(SavedConfig.GamesNode savedConfgGamesNode)
-            : base(savedConfgGamesNode.Name)
+            : base(savedConfgGamesNode.id, savedConfgGamesNode.Name)
         {
             dirPath = savedConfgGamesNode.DirPath;
 
@@ -257,11 +290,17 @@ namespace RetroRoulette
         {
             return new SavedConfig.GamesNode()
             {
+                id = id,
                 Name = name,
                 Enabled = Enabled,
                 Weight = Weight,
                 DirPath = dirPath
             };
+        }
+
+        public void ResetWeight()
+        {
+            Weight = games.Count;
         }
     }
 
@@ -290,7 +329,7 @@ namespace RetroRoulette
         public override IEnumerable<Game> Games => subNodes.SelectMany(subNode => subNode.Games);
 
         public GroupNode(SavedConfig.GroupNode savedConfigGroupNode)
-            : base(savedConfigGroupNode.Name)
+            : base(savedConfigGroupNode.id, savedConfigGroupNode.Name)
         {
             subNodes = new List<Node>();
 
@@ -311,9 +350,26 @@ namespace RetroRoulette
         {
             return new SavedConfig.GroupNode()
             {
+                id = id,
                 Name = name,
                 ChildNodes = subNodes.Select(subNode => subNode.ToSavedConfigNode()).ToList()
             };
+        }
+
+        public IEnumerable<Node> AllSubNodes()
+        {
+            foreach (Node subNode in subNodes)
+            {
+                yield return subNode;
+
+                if (subNode is GroupNode groupSubNode)
+                {
+                    foreach (Node subNodeChild in groupSubNode.AllSubNodes())
+                    {
+                        yield return subNodeChild;
+                    }
+                }
+            }
         }
 
         public Game? WeightedFilteredRandomGame()
@@ -388,6 +444,7 @@ namespace RetroRoulette
             {
                 string jsonSavedConfig = File.ReadAllText("rr_config.txt");
                 SavedConfig savedConfig = JsonSerializer.Deserialize<SavedConfig>(jsonSavedConfig);
+                savedConfig.InitIds();
                 rootNode = new GroupNode(savedConfig.RootNode);
             }
 
@@ -504,7 +561,7 @@ namespace RetroRoulette
             ImGui.SetNextItemWidth(searchWidth);
             ImGui.InputText("##search", ref browserSearch, 128);
 
-            List<Game> matchingGames = rootNode.Games.Where(game => game.MatchesNameFilter(browserSearch)).ToList(); // TODO this is using the filter!
+            List<Game> matchingGames = rootNode.Games.Where(game => game.MatchesNameFilter(browserSearch)).ToList();
 
             ImGui.SameLine();
             ImGui.Text($"{matchingGames.Count}");
@@ -542,6 +599,8 @@ namespace RetroRoulette
 
             if (showGameSelCfgThisFrame)
             {
+                // TODO use a table so that the 2nd child width stays constant on resize
+
                 ImGui.BeginChild("slotmachine", new Vector2(ImGui.GetContentRegionAvail().X / 2, ImGui.GetContentRegionAvail().Y), ImGuiChildFlags.ResizeX);
             }
 
@@ -584,36 +643,101 @@ namespace RetroRoulette
 
         private static void RenderSlotMachine()
         {
-            ImGui.PushFont(font40);
-            ImGui.PushStyleVar(ImGuiStyleVar.FramePadding, ImGui.GetStyle().FramePadding * 2);
-            ImGui.BeginDisabled(reels.Any(reel => reel.spinning));
+            float spinStopButtonsSize;
 
-            float buttonsSize = ImGui.CalcTextSize("Spin").X + ImGui.GetStyle().FramePadding.X * 2;
-            ImGui.SetCursorPosX(ImGui.GetCursorPosX() + (ImGui.GetContentRegionAvail().X / 2 - buttonsSize / 2));
-            if (ImGui.Button("Spin"))
+            using (StyleContext sctxButtons = new StyleContext())
             {
-                reels.Clear();
+                sctxButtons.SetStyleVar(ImGuiStyleVar.FramePadding, ImGui.GetStyle().FramePadding * 2);
+                sctxButtons.SetFont(font40);
 
-                for (int i = 0; i < nReels; i++)
+                spinStopButtonsSize =
+                    ImGui.CalcTextSize("Spin!").X +
+                    ImGui.GetStyle().FramePadding.X * 2 +
+                    ImGui.GetStyle().ItemSpacing.X +
+                    ImGui.CalcTextSize("Stop!").X +
+                    ImGui.GetStyle().FramePadding.X * 2;
+
+                ImGui.SetCursorPosX(ImGui.GetCursorPosX() + (ImGui.GetContentRegionAvail().X / 2 - spinStopButtonsSize / 2));
+
+                using (StyleContext sctxSpin = new StyleContext())
                 {
-                    reels.Add(new Reel(rootNode.WeightedFilteredRandomGame()));
+                    sctxSpin.SetDisabled(reels.Any(reel => reel.spinning));
+
+                    //Vector4 color = new Vector4(70/255.0f, 124/255.0f, 46/255.0f, 1.0f);
+                    Vector4 color = new Vector4(4/255.0f, 141/255.0f, 6/255.0f, 1.0f);
+                    sctxSpin.SetStyleColor(ImGuiCol.Button, color);
+                    sctxSpin.SetStyleColor(ImGuiCol.ButtonHovered, color * 0.9f);
+                    sctxSpin.SetStyleColor(ImGuiCol.ButtonActive, color * 0.7f);
+   
+
+                    if (ImGui.Button("Spin!"))
+                    {
+                        reels.Clear();
+
+                        for (int i = 0; i < nReels; i++)
+                        {
+                            reels.Add(new Reel(rootNode.WeightedFilteredRandomGame()));
+                        }
+
+                        nextSpinTick = appStopwatch.Elapsed.TotalSeconds;
+                    }
                 }
 
-                nextSpinTick = appStopwatch.Elapsed.TotalSeconds;
+                ImGui.SameLine();
+
+                using (StyleContext sctxStop = new StyleContext())
+                {
+                    sctxStop.SetDisabled(!reels.Any(reel => reel.spinning));
+
+                    Vector4 color = new Vector4(203/255.0f, 54/255.0f, 37/255.0f, 1.0f);
+                    sctxStop.SetStyleColor(ImGuiCol.Button, color);
+                    sctxStop.SetStyleColor(ImGuiCol.ButtonHovered, color * 0.9f);
+                    sctxStop.SetStyleColor(ImGuiCol.ButtonActive, color * 0.7f);
+
+                    if (ImGui.Button("Stop!"))
+                    {
+                        reels.First(reel => reel.spinning).spinning = false;
+                    }
+                }
             }
 
-            ImGui.EndDisabled();
-            ImGui.PopStyleVar();
-            ImGui.PopFont();
-
-            ImGui.SameLine();
-
-            ImGui.SetNextItemWidth(80);
-
-            if (ImGui.InputInt("##nReels", ref nReels))
             {
-                if (nReels <= 1)
-                    nReels = 1;
+                const float incDecBtnsWidth = 40;
+
+                float cursorPosXStart = ImGui.GetCursorPosX();
+                float contentRegionAvailXStart = ImGui.GetContentRegionAvail().X;
+
+                ImGui.SetCursorPosX(cursorPosXStart + (contentRegionAvailXStart / 2 - spinStopButtonsSize / 2));
+
+                ImGui.BeginDisabled(nReels == 1);
+
+                if (ImGui.Button("<##decreel", new Vector2(incDecBtnsWidth, 0)))
+                {
+                    nReels--;
+                }
+
+                ImGui.EndDisabled();
+                
+                ////
+
+                string nReelText = $"{nReels} reel{(nReels > 1 ? "s" : "")}";
+                float nReelTextWidth = ImGui.CalcTextSize(nReelText).X;
+
+                ImGui.SameLine();
+                ImGui.SetCursorPosX(cursorPosXStart + (contentRegionAvailXStart / 2 - nReelTextWidth / 2));
+                ImGui.TextUnformatted(nReelText);
+
+                ////
+
+                ImGui.SameLine();
+                ImGui.SetCursorPosX(cursorPosXStart + (contentRegionAvailXStart / 2 + spinStopButtonsSize / 2 - incDecBtnsWidth));
+
+                if (ImGui.Button(">##increel", new Vector2(incDecBtnsWidth, 0)))
+                {
+                    nReels++;
+                }
+
+                // If user adjusts reel count while spinnig, adjust the reels themselves
 
                 if (reels.Any(reel => reel.spinning))
                 {
@@ -629,65 +753,47 @@ namespace RetroRoulette
                 }
             }
 
-            const float searchWidth = 300;
+            float searchWidth = 300;
             ImGui.SetCursorPosX(ImGui.GetCursorPosX() + (ImGui.GetContentRegionAvail().X / 2 - searchWidth / 2));
             ImGui.SetNextItemWidth(searchWidth);
             ImGui.InputText("##search", ref gameNameFilter, 128);
             ImGui.SameLine();
             ImGui.Text($"{rootNode.FilteredGames.Count()}");
 
-            if (reels.Any(reel => reel.spinning) && appStopwatch.Elapsed.TotalSeconds >= nextSpinTick)
-            {
-                foreach (Reel reel in reels)
-                {
-                    if (reel.spinning)
-                    {
-                        reel.Game = rootNode.WeightedFilteredRandomGame();
-                    }
-                }
-
-                nextSpinTick = appStopwatch.Elapsed.TotalSeconds + spinTickTime;
-            }
-
-            const int stopColWidth = 90;
             const int nameColWidth = 400;
 
-            ImGui.SetCursorPosX(ImGui.GetCursorPosX() + (ImGui.GetContentRegionAvail().X / 2 - nameColWidth / 2) - stopColWidth);
+            ImGui.SetCursorPosX(ImGui.GetCursorPosX() + (ImGui.GetContentRegionAvail().X / 2 - nameColWidth / 2));
 
-            if (ImGui.BeginTable("roms", 3))
+            if (ImGui.BeginTable("roms", 2))
             {
-                ImGui.TableSetupColumn("##stop", ImGuiTableColumnFlags.WidthFixed, stopColWidth);
+                if (reels.Any(reel => reel.spinning) && appStopwatch.Elapsed.TotalSeconds >= nextSpinTick)
+                {
+                    foreach (Reel reel in reels)
+                    {
+                        if (reel.spinning)
+                        {
+                            // TODO don't allow selecting a game that's already been selected in another reel
+
+                            reel.Game = rootNode.WeightedFilteredRandomGame();
+                        }
+                    }
+
+                    nextSpinTick = appStopwatch.Elapsed.TotalSeconds + spinTickTime;
+                }
+
                 ImGui.TableSetupColumn("##name", ImGuiTableColumnFlags.WidthFixed, nameColWidth);
                 ImGui.TableSetupColumn("##button", ImGuiTableColumnFlags.WidthFixed, 300);
 
-                int i = 0;
-
                 foreach (Reel reel in reels)
                 {
-                    i++;
-
                     Game? game = reel.Game;
 
                     ImGui.TableNextRow();
 
                     if (game != null)
                     {
-                        ImGui.TableNextColumn();
-
                         if (reel.spinning)
-                        {
-                            Vector4 color = new Vector4(0.9f, 0.3f, 0.2f, 1.0f);
-                            ImGui.PushStyleColor(ImGuiCol.Button, color);
-                            ImGui.PushStyleColor(ImGuiCol.ButtonHovered, color * 0.9f);
-                            ImGui.PushStyleColor(ImGuiCol.ButtonActive, color * 0.7f);
-
-                            if (ImGui.Button($"##stop{i}", new Vector2(60, 60)))
-                            {
-                                reel.spinning = false;
-                            }
-
-                            ImGui.PopStyleColor(3);
-                        }
+                            ImGui.PushStyleColor(ImGuiCol.Text, new Vector4(0.6f, 0.6f, 0.6f, 1.0f));
 
                         ImGui.TableNextColumn();
                         ImGui.PushFont(font30);
@@ -701,6 +807,9 @@ namespace RetroRoulette
                         }
                         ImGui.PopFont();
                         ImGui.Text(game.gamesNode.name);
+
+                        if (reel.spinning)
+                            ImGui.PopStyleColor();
 
                         ImGui.Spacing();
                         ImGui.Spacing();
@@ -753,6 +862,17 @@ namespace RetroRoulette
 
         private static void RenderGameSelectionConfig()
         {
+            if (ImGui.Button("Reset"))
+            {
+                foreach (GamesNode gamesNode in rootNode.AllSubNodes().OfType<GamesNode>())
+                {
+                    gamesNode.Enabled = true;
+                    gamesNode.ResetWeight();
+                }
+            }
+
+            ImGui.Separator();
+
             if (ImGui.BeginTable("nodetree", 3))
             {
                 ImGui.TableSetupColumn("##name", ImGuiTableColumnFlags.WidthFixed, 250);
@@ -779,7 +899,7 @@ namespace RetroRoulette
                         }
                         else if (nextNode is GroupNode groupNode)
                         {
-                            if (ImGui.TreeNode(groupNode.name))
+                            if (ImGui.TreeNode($"{groupNode.name}###{groupNode.id}"))
                             {
                                 nodeOpen = true;
                                 foldersStack.Push(new Queue<Node>(groupNode.subNodes));
@@ -841,94 +961,25 @@ namespace RetroRoulette
 
         private static void RenderConfigTab()
         {
-            if (ImGui.BeginTable("nodetree", 2))
+            if (ImGui.BeginTable("nodetree", 3))
             {
-                //ImGui.TableSetupColumn("##del", ImGuiTableColumnFlags.WidthFixed | ImGuiTableColumnFlags.IndentDisable, 25);
-                //ImGui.TableSetupColumn("##up", ImGuiTableColumnFlags.WidthFixed | ImGuiTableColumnFlags.IndentDisable, 25);
-                //ImGui.TableSetupColumn("##down", ImGuiTableColumnFlags.WidthFixed | ImGuiTableColumnFlags.IndentDisable, 25);
-                ImGui.TableSetupColumn("name", ImGuiTableColumnFlags.WidthFixed | ImGuiTableColumnFlags.IndentEnable, 250);
+                ImGui.TableSetupColumn("name", ImGuiTableColumnFlags.WidthFixed | ImGuiTableColumnFlags.IndentEnable, 300); // TODO dynamic size
+                ImGui.TableSetupColumn("buttons", ImGuiTableColumnFlags.WidthFixed, 207);
                 ImGui.TableSetupColumn("props", ImGuiTableColumnFlags.WidthStretch);
 
-                SavedConfig.GroupNode savedconfigRootNodeRender = savedconfigRootNodePendingSave ?? (SavedConfig.GroupNode)rootNode.ToSavedConfigNode();
-
-                Stack<Queue<SavedConfig.Node>> foldersStack = new Stack<Queue<SavedConfig.Node>>();
-                foldersStack.Push(new Queue<SavedConfig.Node>(savedconfigRootNodeRender.ChildNodes));
-
-                while (foldersStack.Count > 0)
+                using (StyleContext sctxNodetree = new StyleContext())
                 {
-                    if (foldersStack.Peek().TryDequeue(out SavedConfig.Node nextNode))
+                    sctxNodetree.SetStyleVar(ImGuiStyleVar.ItemSpacing, new Vector2(2, 0));
+                    sctxNodetree.SetStyleVar(ImGuiStyleVar.CellPadding, new Vector2(1, 1));
+
+                    SavedConfig.GroupNode savedconfigRootNodeRender = savedconfigRootNodePendingSave ?? (SavedConfig.GroupNode)rootNode.ToSavedConfigNode();
+
+                    bool edited = false;
+                    RenderConfigTabTree(savedconfigRootNodeRender, ref edited, null, savedconfigRootNodeRender);
+
+                    if (edited && savedconfigRootNodePendingSave == null)
                     {
-                        ImGui.TableNextRow();
-
-                        //float btnHeight = ImGui.CalcTextSize("^").Y + ImGui.GetStyle().FramePadding.Y * 2;
-
-                        //ImGui.TableNextColumn();
-
-                        //ImGui.Button("-", new Vector2(btnHeight, 0));
-
-                        //ImGui.TableNextColumn();
-
-                        //ImGui.Button("^", new Vector2(btnHeight, 0));
-
-                        //ImGui.TableNextColumn();
-
-                        //ImGui.Button("v", new Vector2(btnHeight, 0));
-
-                        if (nextNode is SavedConfig.GamesNode gamesNode)
-                        {
-                            ImGui.TableNextColumn();
-                            ImGui.TreeNodeEx(gamesNode.Name, ImGuiTreeNodeFlags.Leaf | ImGuiTreeNodeFlags.NoTreePushOnOpen);
-
-                            ImGui.TableNextColumn();
-
-                            string dirPathEdit = gamesNode.DirPath!;
-                            ImGui.InputText($"##folderpath_{gamesNode.Name}", ref dirPathEdit, 512);
-
-                            if (ImGui.IsItemEdited())
-                            {
-                                gamesNode.DirPath = dirPathEdit;
-
-                                if (savedconfigRootNodePendingSave == null)
-                                {
-                                    savedconfigRootNodePendingSave = savedconfigRootNodeRender;
-                                }
-                            }
-
-                            // TODO cache
-
-                            //if (!Directory.Exists(dirPathEdit))
-                            //{
-                            //    ImGui.Text("oh no!");
-                            //}
-                        }
-                        else if (nextNode is SavedConfig.GroupNode groupNode)
-                        {
-                            ImGui.TableNextColumn();
-
-                            if (ImGui.TreeNode(groupNode.Name))
-                            {
-                                foldersStack.Push(new Queue<SavedConfig.Node>(groupNode.ChildNodes));
-
-                                if (ImGui.BeginPopupContextWindow())
-                                {
-                                    //if (ImGui.Selectable("New Grouping"))
-                                    //{
-                                    //    groupNode.ChildNodes.Add()
-                                    //}
-
-                                    //ImGui.EndPopup();
-                                }
-                            }
-
-                            ImGui.TableNextColumn();
-                        }
-                    }
-                    else
-                    {
-                        foldersStack.Pop();
-
-                        if (foldersStack.Count > 0)
-                            ImGui.TreePop();
+                        savedconfigRootNodePendingSave = savedconfigRootNodeRender;
                     }
                 }
 
@@ -953,6 +1004,291 @@ namespace RetroRoulette
             }
 
             ImGui.EndDisabled();
+        }
+
+        private static void RenderConfigTabTree(SavedConfig.Node node, ref bool edited, SavedConfig.GroupNode? parentNode, SavedConfig.GroupNode rootNode)
+        {
+            ImGui.PushID(node.id);
+
+            bool renderChildren = false;
+
+            ImGui.TableNextRow();
+
+            float dragAreaYMin = ImGui.GetCursorScreenPos().Y;
+
+            ImGui.TableNextColumn();
+
+            {
+                if (node is SavedConfig.GamesNode gamesNode)
+                {
+                    ImGui.SetCursorPosX(ImGui.GetCursorPosX() + ImGui.GetTreeNodeToLabelSpacing() + ImGui.GetStyle().ItemSpacing.X);
+
+                    ImGui.SetNextItemWidth(-float.Epsilon);
+                    ImGui.InputText("##nameedit", ref gamesNode.NameEditable, 128);
+
+                    if (ImGui.IsItemEdited())
+                        edited = true;
+                }
+                else if (node is SavedConfig.GroupNode groupNode)
+                {
+                    if (node == rootNode)
+                    {
+                        ImGui.SetNextItemOpen(true);
+                        ImGui.BeginDisabled();
+                        ImGui.TreeNodeEx("##treenode", ImGuiTreeNodeFlags.AllowOverlap | ImGuiTreeNodeFlags.FramePadding);
+                        ImGui.EndDisabled();
+                        renderChildren = true;
+                    }
+                    else
+                    {
+                        renderChildren = ImGui.TreeNodeEx("##treenode", ImGuiTreeNodeFlags.AllowOverlap | ImGuiTreeNodeFlags.FramePadding);
+
+                        ImGui.SameLine();
+
+                        ImGui.SetNextItemWidth(-float.Epsilon);
+                        ImGui.InputText("##nameedit", ref groupNode.NameEditable, 128);
+
+                        if (ImGui.IsItemEdited())
+                            edited = true;
+                    }
+                }
+            }
+
+            ImGui.TableNextColumn();
+
+            bool handleDrag = false;
+
+            if (node != rootNode)
+            {
+                ImGui.Button($"^ v");
+
+                if (ImGui.IsItemActive() && !ImGui.IsItemHovered())
+                {
+                    handleDrag = true;
+                }
+
+                ImGui.SameLine();
+
+                if (ImGui.Button("Move to..."))
+                {
+                    ImGui.OpenPopup("moveto");
+                }
+
+                if (ImGui.IsPopupOpen("moveto") && ImGui.BeginPopup("moveto"))
+                {
+                    if (ImGui.Selectable("(root)"))
+                    {
+                        parentNode.ChildNodes.Remove(node);
+                        rootNode.ChildNodes.Add(node);
+                        edited = true;
+                    }
+
+                    void RenderMenu(SavedConfig.GroupNode menuNode, ref bool edited)
+                    {
+                        foreach (SavedConfig.Node menuNodeChild in new List<SavedConfig.Node>(menuNode.ChildNodes))
+                        {
+                            if (menuNodeChild is SavedConfig.GroupNode groupNodeChild)
+                            {
+                                bool isThisNode = groupNodeChild == node;
+
+                                if (!isThisNode && groupNodeChild.ChildNodes.Any(c => c is SavedConfig.GroupNode))
+                                {
+                                    if (ImGui.BeginMenu(groupNodeChild.Name))
+                                    {
+                                        RenderMenu(groupNodeChild, ref edited);
+                                        ImGui.EndMenu();
+                                    }
+                                }
+                                else
+                                {
+                                    ImGui.BeginDisabled(isThisNode);
+                                    ImGui.Selectable(groupNodeChild.Name);
+                                    ImGui.EndDisabled();
+                                }
+
+                                if (ImGui.IsItemClicked())
+                                {
+                                    parentNode.ChildNodes.Remove(node);
+                                    groupNodeChild.ChildNodes.Insert(0, node);
+                                    edited = true;
+                                }
+                            }
+                        }
+                    }
+
+                    RenderMenu(rootNode, ref edited);
+
+                    ImGui.EndPopup();
+                }
+
+                ImGui.SameLine();
+
+                if (ImGui.Button("Delete"))
+                {
+                    parentNode.ChildNodes.Remove(node);
+                    edited = true;
+                }
+
+                ImGui.SameLine();
+            }
+
+            {
+                if (node is SavedConfig.GroupNode groupNode)
+                {
+                    if (ImGui.Button("Add..."))
+                    {
+                        ImGui.OpenPopup("add");
+                    }
+
+                    if (ImGui.IsPopupOpen("add") && ImGui.BeginPopup("add"))
+                    {
+                        // TODO these need ids!!
+
+                        if (ImGui.Selectable("Group"))
+                        {
+                            groupNode.ChildNodes.Add(new SavedConfig.GroupNode());
+                            edited = true;
+                        }
+
+                        if (ImGui.Selectable("File Folder"))
+                        {
+                            groupNode.ChildNodes.Add(new SavedConfig.GamesNode());
+                            edited = true;
+                        }
+
+                        ImGui.EndPopup();
+                    }
+                }
+            }
+
+            ImGui.TableNextColumn();
+
+            {
+                if (node is SavedConfig.GamesNode gamesNode)
+                {
+                    ImGui.SetNextItemWidth(-float.Epsilon);
+                    ImGui.InputText("##pathedit", ref gamesNode.DirPathEditable, 512);
+
+                    if (ImGui.IsItemEdited())
+                        edited = true;
+
+                    // TODO cache
+
+                    //if (!Directory.Exists(dirPathEdit))
+                    //{
+                    //    ImGui.Text("oh no!");
+                    //}
+                }
+            }
+
+            ImGui.PopID();
+
+            if (renderChildren)
+            {
+                if (node is SavedConfig.GroupNode groupNode)
+                {
+                    foreach (SavedConfig.Node childNode in new List<SavedConfig.Node>(groupNode.ChildNodes))
+                    {
+                        RenderConfigTabTree(childNode, ref edited, groupNode, rootNode);
+                    }
+
+                    ImGui.TreePop();
+                }
+            }
+
+            float dragAreaYMax = ImGui.GetCursorScreenPos().Y + ImGui.GetStyle().CellPadding.Y;
+            
+            if (handleDrag)
+            {
+                if (ImGui.GetMousePos().Y < dragAreaYMin || ImGui.GetMousePos().Y > dragAreaYMax)
+                {
+                    // TODO this gets confused if you drag quickly enough to cross two rows at once (I think?)
+
+                    int dirNext = Math.Sign(ImGui.GetMouseDragDelta().Y);
+
+                    int i = parentNode.ChildNodes.IndexOf(node);
+
+                    if (dirNext == -1 && i > 0)
+                    {
+                        parentNode.ChildNodes.RemoveAt(i);
+                        parentNode.ChildNodes.Insert(i - 1, node);
+                        edited = true;
+
+                        ImGui.ResetMouseDragDelta();
+                    }
+                    else if (dirNext == 1 && i < (parentNode.ChildNodes.Count - 1))
+                    {
+                        parentNode.ChildNodes.RemoveAt(i);
+                        parentNode.ChildNodes.Insert(i + 1, node);
+                        edited = true;
+
+                        ImGui.ResetMouseDragDelta();
+                    }
+                }
+            }
+        }
+    }
+
+    class StyleContext : IDisposable
+    {
+        private int numStyleColorsPushed = 0;
+        private int numStyleVarsPushed = 0;
+        private bool pushedFont = false;
+        private bool beganDisabled = false;
+
+        public void SetDisabled(bool disabled)
+        {
+            Debug.Assert(!beganDisabled);
+
+            ImGui.BeginDisabled(disabled);
+            beganDisabled = true;
+        }
+
+        public void SetStyleColor(ImGuiCol idx, uint col)
+        {
+            ImGui.PushStyleColor(idx, col);
+            numStyleColorsPushed++;
+        }
+
+        public void SetStyleColor(ImGuiCol idx, Vector4 col)
+        {
+            ImGui.PushStyleColor(idx, col);
+            numStyleColorsPushed++;
+        }
+
+        public void SetStyleVar(ImGuiStyleVar idx, float val)
+        {
+            ImGui.PushStyleVar(idx, val);
+            numStyleVarsPushed++;
+        }
+
+        public void SetStyleVar(ImGuiStyleVar idx, Vector2 val)
+        {
+            ImGui.PushStyleVar(idx, val);
+            numStyleVarsPushed++;
+        }
+
+        public void SetFont(ImFontPtr font)
+        {
+            Debug.Assert(!pushedFont);
+
+            ImGui.PushFont(font);
+            pushedFont = true;
+        }
+
+        public void Dispose()
+        {
+            if (numStyleColorsPushed > 0)
+                ImGui.PopStyleColor(numStyleColorsPushed);
+
+            if (numStyleVarsPushed > 0)
+                ImGui.PopStyleVar(numStyleVarsPushed);
+
+            if (pushedFont)
+                ImGui.PopFont();
+
+            if (beganDisabled)
+                ImGui.EndDisabled();
         }
     }
 }
