@@ -20,6 +20,34 @@ using Veldrid.StartupUtilities;
 using Vulkan.Xlib;
 using static RetroRoulette.SavedConfig;
 
+// Ideas for stuff to add support for:
+//  - PC games
+//     - Windows games (old '95/'98, more modern 2000s)
+//     - MS-DOS games
+//     - MSX?
+//     - Apple II (and etc.)
+//     - Amiga
+//     - Macintosh (shareware?)
+//     - Commodore 64?
+//     - Others? ZX Spectrum?
+//  - MAME arcade games
+//  - Bluemaxima Flashpoint? Open up the SQLite databse in Data/. Maybe use the main curated list as an optional filter?
+//  - itch.io games?
+//  - Other random weird systems: Game Master, GP32, Pokemon Mini, Tiger Game.com, Watara Supervision,
+//    LeapFrog Leapster, VTech V.Smile, Amiga CD32, Commodore CDTV, Funtech Super A'Can, 
+//    Atari 7800, Philips Videopac+ G7400, Sega SG-1000, Super Casette Vision, Arcadia 2001,
+//    Atari 2600, Atari 5200, ColecoVision, Entex Adventure Vision, Fairchild Channel F, Intellivision
+//    Magnavox Odyssey2, RCA Studio II, Vectrex, VTech Creativision. Others?
+
+// Feature/improvement ideas:
+// - multithread startup
+// - list roms that weren't playable
+// - option to hide names but not systems (in reels)
+// - filters for additional flags on ROMs, and regions. E.g. only play unlicensed games, or only play Korean games
+// - some way of creating custom tags/collections? would be cool to do like a "Classics of Game" night
+// - support using no-intro, redump, etc xmls to get more info about ROMs?
+// - use xmls to group games with different names? maybe even group games across multiple systems?
+
 namespace RetroRoulette
 {
     class SavedConfig
@@ -57,6 +85,8 @@ namespace RetroRoulette
         {
             private string dirPath = "";
             public string DirPath { get => dirPath; set => dirPath = value; }
+            public List<string> PlayCommand { get; set; } = new List<string>();
+            public List<string> SupportedExtensions { get; set; } = new List<string>();
 
             [JsonIgnore]
             public ref string DirPathEditable => ref dirPath;
@@ -149,103 +179,11 @@ namespace RetroRoulette
     {
         public string path;
         public RomInfo details;
-        private string folderName;
 
-        public string Ext => Path.GetExtension(this.path);
-
-        public ROM(string path, string folderName)
+        public ROM(string path)
         {
             this.path = path;
             details = ROMNameParser.Parse(Path.GetFileNameWithoutExtension(this.path));
-            this.folderName = folderName;
-        }
-
-        private string[]? GetPlayCommand()
-        {
-            return (folderName, Ext) switch
-            {
-                // Ideas for stuff to add support for:
-                //  - PC games
-                //     - Windows games (old '95/'98, more modern 2000s)
-                //     - MS-DOS games
-                //     - MSX?
-                //     - Apple II (and etc.)
-                //     - Amiga
-                //     - Macintosh (shareware?)
-                //     - Commodore 64?
-                //     - Others? ZX Spectrum?
-                //  - MAME arcade games
-                //  - Bluemaxima Flashpoint? Open up the SQLite databse in Data/. Maybe use the main curated list as an optional filter?
-                //  - Other random weird systems: Game Master, GP32, Pokemon Mini, Tiger Game.com, Watara Supervision,
-                //    LeapFrog Leapster, VTech V.Smile, Amiga CD32, Commodore CDTV, Funtech Super A'Can, 
-                //    Atari 7800, Philips Videopac+ G7400, Sega SG-1000, Super Casette Vision, Arcadia 2001,
-                //    Atari 2600, Atari 5200, ColecoVision, Entex Adventure Vision, Fairchild Channel F, Intellivision
-                //    Magnavox Odyssey2, RCA Studio II, Vectrex, VTech Creativision. Others?
-
-                // TODO for file folder - list filetypes found in folder, allow user to check them, and allow them to pick a program to launch for the folder
-
-                // Feature/improvement ideas:
-                // - multithread startup
-                // - list roms that weren't playable
-                // - option to hide names but not systems (in reels)
-                // - filters for additional flags on ROMs, and regions. E.g. only play unlicensed games, or only play Korean games
-                // - some way of creating custom tags/collections? would be cool to do like a "Classics of Game" night
-                // - support using no-intro, redump, etc xmls to get more info about ROMs?
-                // - use xmls to group games with different names? maybe even group games across multiple systems?
-
-                ("Gamecube" or "Wii (Discs)" or "Wii (WiiWare)", ".rvz" or ".wbfs" or ".wad")
-                    => new[] { "C:\\Portable Programs\\Dolphin\\Dolphin.exe", "-e", path },
-                ("Playstation 2", ".bin" or ".iso")
-                    => new[] { "C:\\Program Files\\PCSX2\\pcsx2-qt.exe", path },
-                ("Dreamcast", ".cue")
-                    => new[] { "C:\\Portable Programs\\Flycast\\flycast.exe", path },
-                ("Xbox", ".iso")
-                    => new[] { "C:\\Portable Programs\\Xemu\\xemu.exe", path },
-                // NOTE: sounds like Ares is also a good option for PC Engine?
-                // NOTE: lynx roms need a BIOS? and also to be converted for mednafen?
-                (_, ".vb" or ".pce" or ".lnx")
-                or ("Sega Saturn", ".cue")
-                    => new[] { "C:\\Portable Programs\\Mednafen & Mednaffe\\mednafen.exe", path },
-                ("Playstation", ".cue" or ".chd")
-                    => new[] { "C:\\Portable Programs\\DuckStation\\duckstation-qt-x64-ReleaseLTCG.exe", path },
-                // NOTE: Genesis Plus GX or MAME(?) might have better support for Sega Master System games
-                // NOTE: Blastem or Genesis Plus GX might provide better emulation of Mega Drive games
-                (_, ".z64" or ".ndd" or ".sfc" or ".st" or ".bs" or ".32x" or ".sc" or ".ws" or ".wsc" or ".ngc" or ".ngp")
-                or ("Sega Master System", ".sms")
-                or ("Sega CD", ".cue")
-                    => new[] { "C:\\Portable Programs\\ares-v132\\ares.exe", path },
-                (_, ".j64")
-                    => new[] { "C:\\Portable Programs\\BigPEmu\\BigPEmu.exe", path },
-                (_, ".nes" or ".fds")
-                    => new[] { "C:\\Portable Programs\\Mesen\\Mesen.exe", path },
-                (_, ".gb" or ".gbc")
-                    => new[] { "C:\\Portable Programs\\SameBoy\\sameboy.exe", path },
-                (_, ".gba")
-                    => new[] { "C:\\Portable Programs\\mGBA\\mGBA.exe", path },
-                ("CD-i", ".chd")
-                    => new[] { "C:\\Portable Programs\\MAME\\mame.exe", "cdimono1", "-cdrm", path },
-                ("3DO", ".cue")
-                    => new[] { "C:\\RetroArch-Win64\\retroarch.exe", "-L", "opera", path },
-                _ => null,
-            };
-        }
-
-        public bool CanPlay => GetPlayCommand() != null;
-
-        public void Play()
-        {
-            Debug.Assert(CanPlay);
-            string[] command = GetPlayCommand()!;
-
-            Process p = new Process();
-
-            p.StartInfo.FileName = command[0];
-            foreach (string arg in command.Skip(1))
-                p.StartInfo.ArgumentList.Add(arg);
-
-            // MAME looks for paths on the working directory (annoying)
-            p.StartInfo.WorkingDirectory = Path.GetDirectoryName(command[0]);
-            p.Start();
         }
     }
 
@@ -261,7 +199,22 @@ namespace RetroRoulette
 
         public override IEnumerable<string> Variants() => roms.Select(rom => rom.details.PropsString());
         public override string DefaultVariant() => DefaultROM().details.PropsString();
-        public override void PlayVariant(string variant) => roms.First(rom => rom.details.PropsString() == variant).Play();
+        public override void PlayVariant(string variant)
+        {
+            ROM rom = roms.First(rom => rom.details.PropsString() == variant);
+
+            string[] command = (ownerNode as FileFolderNode).PlayCommand.Append(rom.path).ToArray();
+
+            Process p = new Process();
+
+            p.StartInfo.FileName = command[0];
+            foreach (string arg in command.Skip(1))
+                p.StartInfo.ArgumentList.Add(arg);
+
+            // MAME looks for paths on the working directory (annoying)
+            p.StartInfo.WorkingDirectory = Path.GetDirectoryName(command[0]);
+            p.Start();
+        }
 
         protected ROM DefaultROM()
         {
@@ -294,6 +247,7 @@ namespace RetroRoulette
 
         public abstract IEnumerable<Game> Games { get; }
         public IEnumerable<Game> FilteredGames => Games.Where(game => game.MatchesNameFilter(Program.gameNameFilter));
+        public IEnumerable<Game> FilteredEnabledGames => Games.Where(game => game.ownerNode.Enabled && game.MatchesNameFilter(Program.gameNameFilter));
         public bool AnyGamesMatchFilter => Games.Any(game => game.MatchesNameFilter(Program.gameNameFilter));
 
         public Node(int id, string name)
@@ -360,6 +314,10 @@ namespace RetroRoulette
     class FileFolderNode : GamesNode
     {
         private readonly string dirPath;
+        private readonly List<string> playCommand;
+        public IEnumerable<string> PlayCommand => playCommand;
+        private readonly List<string> supportedExtensions;
+
         private readonly List<ROMSet> romsets;
 
         public override IEnumerable<Game> Games => romsets;
@@ -368,13 +326,15 @@ namespace RetroRoulette
             : base(savedConfigFileFolderNode)
         {
             dirPath = savedConfigFileFolderNode.DirPath;
+            playCommand = savedConfigFileFolderNode.PlayCommand;
+            supportedExtensions = savedConfigFileFolderNode.SupportedExtensions;
 
             if (Directory.Exists(dirPath))
             {
                 romsets = Directory.EnumerateFiles(dirPath, "*", SearchOption.AllDirectories)
-                    .Where(filePath => !ROMNameParser.IsBios(filePath))
-                    .Select(filePath => new ROM(filePath, name))
-                    .Where(rom => rom.CanPlay)
+                    .Where(filePath => supportedExtensions.Contains(Path.GetExtension(filePath)))
+                    .Where(filePath => !ROMNameParser.IsBios(filePath)) // TODO
+                    .Select(filePath => new ROM(filePath))
                     .GroupBy(rom => rom.details.name)
                     .Select(grouping => new ROMSet(grouping.Key, this, grouping))
                     .ToList();
@@ -398,7 +358,9 @@ namespace RetroRoulette
                 Name = name,
                 Enabled = Enabled,
                 Weight = Weight,
-                DirPath = dirPath
+                DirPath = dirPath,
+                PlayCommand = playCommand,
+                SupportedExtensions = supportedExtensions,
             };
         }
     }
@@ -545,14 +507,31 @@ namespace RetroRoulette
 
         static Node? nodeDraggedProgressBar = null;
 
+        static void LoadConfigFromDisk()
+        {
+            string jsonSavedConfig = File.ReadAllText("rr_config.txt");
+            SavedConfig? savedConfig = JsonSerializer.Deserialize<SavedConfig>(jsonSavedConfig);
+
+            if (savedConfig == null)
+            {
+                savedConfig = new SavedConfig();
+            }
+
+            savedConfig.InitIds();
+            rootNode = new GroupNode(savedConfig.RootNode);
+        }
+
+        static void SaveConfigToDisk()
+        {
+            SavedConfig savedConfig = new SavedConfig();
+            savedConfig.RootNode = (SavedConfig.GroupNode)rootNode.ToSavedConfigNode();
+            string jsonSavedConfig = JsonSerializer.Serialize(savedConfig, new JsonSerializerOptions() { WriteIndented = true });
+            File.WriteAllText("rr_config.txt", jsonSavedConfig);
+        }
+
         static void Main(string[] args)
         {
-            {
-                string jsonSavedConfig = File.ReadAllText("rr_config.txt");
-                SavedConfig savedConfig = JsonSerializer.Deserialize<SavedConfig>(jsonSavedConfig);
-                savedConfig.InitIds();
-                rootNode = new GroupNode(savedConfig.RootNode);
-            }
+            LoadConfigFromDisk();
 
             Sdl2Window window;
             GraphicsDevice gd;
@@ -607,12 +586,7 @@ namespace RetroRoulette
                 gd.SwapBuffers(gd.MainSwapchain);
             }
 
-            {
-                SavedConfig savedConfig = new SavedConfig();
-                savedConfig.RootNode = (SavedConfig.GroupNode)rootNode.ToSavedConfigNode();
-                string jsonSavedConfig = JsonSerializer.Serialize(savedConfig, new JsonSerializerOptions() { WriteIndented = true });
-                File.WriteAllText("rr_config.txt", jsonSavedConfig);
-            }
+            SaveConfigToDisk();
 
             // Clean up Veldrid resources
             gd.WaitForIdle();
@@ -716,8 +690,6 @@ namespace RetroRoulette
 
                 ImGui.EndTable();
             }
-
-            // TODO "copy to roulette"
         }
 
         private static void RenderSlotMachineTab()
@@ -790,12 +762,10 @@ namespace RetroRoulette
                 {
                     sctxSpin.SetDisabled(reels.Any(reel => reel.spinning));
 
-                    //Vector4 color = new Vector4(70/255.0f, 124/255.0f, 46/255.0f, 1.0f);
                     Vector4 color = new Vector4(4/255.0f, 141/255.0f, 6/255.0f, 1.0f);
                     sctxSpin.SetStyleColor(ImGuiCol.Button, color);
                     sctxSpin.SetStyleColor(ImGuiCol.ButtonHovered, color * 0.9f);
                     sctxSpin.SetStyleColor(ImGuiCol.ButtonActive, color * 0.7f);
-   
 
                     if (ImGui.Button("Spin!"))
                     {
@@ -864,7 +834,7 @@ namespace RetroRoulette
                     nReels++;
                 }
 
-                // If user adjusts reel count while spinnig, adjust the reels themselves
+                // If user adjusts reel count while spinning, adjust the reels themselves
 
                 if (reels.Any(reel => reel.spinning))
                 {
@@ -885,7 +855,7 @@ namespace RetroRoulette
             ImGui.SetNextItemWidth(searchWidth);
             ImGui.InputText("##search", ref gameNameFilter, 128);
             ImGui.SameLine();
-            ImGui.Text($"{rootNode.FilteredGames.Count()}");
+            ImGui.Text($"{rootNode.FilteredEnabledGames.Count()}");
 
             const int nameColWidth = 400;
 
@@ -1034,10 +1004,15 @@ namespace RetroRoulette
                         ImGui.TableNextColumn();
 
                         bool enabled = nextNode.Enabled;
+
+                        ImGui.PushItemFlag((ImGuiItemFlags)(1 << 12), enabled && nextNode is GroupNode groupNode2 && groupNode2.AllSubNodes().Any(sn => !sn.Enabled));
+
                         if (ImGui.Checkbox($"##{nextNode.name}", ref enabled))
                         {
                             nextNode.Enabled = enabled;
                         }
+
+                        ImGui.PopItemFlag();
 
                         ImGui.TableNextColumn();
 
@@ -1090,7 +1065,10 @@ namespace RetroRoulette
             {
                 ImGui.TableSetupColumn("name", ImGuiTableColumnFlags.WidthFixed | ImGuiTableColumnFlags.IndentEnable, 300); // TODO dynamic size
                 ImGui.TableSetupColumn("buttons", ImGuiTableColumnFlags.WidthFixed, 207);
-                ImGui.TableSetupColumn("props", ImGuiTableColumnFlags.WidthStretch);
+
+                // TODO combine these
+
+                ImGui.TableSetupColumn("props", ImGuiTableColumnFlags.WidthFixed, 400);
                 ImGui.TableSetupColumn("commands", ImGuiTableColumnFlags.WidthStretch);
 
                 using (StyleContext sctxNodetree = new StyleContext())
@@ -1119,9 +1097,9 @@ namespace RetroRoulette
             if (ImGui.Button("Save") || (savedconfigRootNodePendingSave != null && saveHotkeyPressed))
             {
                 rootNode = new GroupNode(savedconfigRootNodePendingSave);
-                savedconfigRootNodePendingSave = null;
+                SaveConfigToDisk();
 
-                // TODO actually save
+                savedconfigRootNodePendingSave = null;
             }
 
             ImGui.SameLine();
@@ -1132,6 +1110,23 @@ namespace RetroRoulette
             }
 
             ImGui.EndDisabled();
+        }
+
+        static Dictionary<string, string[]> pathToFileTypes = new Dictionary<string, string[]>();
+
+        private static IEnumerable<string> GetFileTypesInDir(string dirPath)
+        {
+            // TODO periodically refresh
+            // TODO catch dir does not exist exception
+
+            if (!pathToFileTypes.ContainsKey(dirPath))
+            {
+                string[] exts = Directory.EnumerateFiles(dirPath, "*", SearchOption.AllDirectories).Select(filePath => Path.GetExtension(filePath).ToLower()).Distinct().ToArray();
+                Array.Sort(exts);
+                pathToFileTypes[dirPath] = exts;
+            }
+
+            return pathToFileTypes[dirPath];
         }
 
         private static void RenderConfigTabTree(SavedConfig.Node node, ref bool edited, SavedConfig.GroupNode? parentNode, SavedConfig.GroupNode rootNode)
@@ -1316,7 +1311,7 @@ namespace RetroRoulette
                     if (ImGui.IsItemEdited())
                         edited = true;
 
-                    // TODO cache
+                    // TODO
 
                     //if (!Directory.Exists(dirPathEdit))
                     //{
@@ -1398,8 +1393,107 @@ namespace RetroRoulette
                         }
                     }
                 }
+                else if (node is SavedConfig.FileFolderNode fileFolderNode)
+                {
+                    if (ImGui.CollapsingHeader("Play command..."))
+                    {
+                        {
+                            bool isNone = fileFolderNode.PlayCommand.Count == 0;
 
-                // TODO support file folders
+                            ImGui.BeginDisabled(isNone);
+                            if (ImGui.Checkbox("##none", ref isNone))
+                            {
+                                fileFolderNode.PlayCommand.Clear();;
+                                edited = true;
+                            }
+                            ImGui.EndDisabled();
+
+                            ImGui.SameLine(0, ImGui.GetStyle().ItemInnerSpacing.X);
+                            ImGui.AlignTextToFramePadding();
+                            ImGui.TextUnformatted("None");
+                        }
+
+                        {
+                            bool isProgram = fileFolderNode.PlayCommand.Count > 0;
+
+                            ImGui.BeginDisabled(isProgram);
+                            if (ImGui.Checkbox("##program", ref isProgram))
+                            {
+                                fileFolderNode.PlayCommand = new List<string> { "" };
+                                edited = true;
+                            }
+                            ImGui.EndDisabled();
+
+                            ImGui.SameLine(0, ImGui.GetStyle().ItemInnerSpacing.X);
+                            ImGui.AlignTextToFramePadding();
+                            ImGui.TextUnformatted(isProgram ? "Program: " : "Program");
+
+                            if (isProgram)
+                            {
+                                for (int i = 0; i < fileFolderNode.PlayCommand.Count; i++)
+                                {
+                                    ImGui.SameLine();
+
+                                    string cmdComponent = fileFolderNode.PlayCommand[i];
+
+                                    ImGui.SetNextItemWidth(Math.Max(20, ImGui.CalcTextSize(cmdComponent).X + ImGui.GetStyle().FramePadding.X * 2));
+                                    ImGui.InputText($"##programname-{i}", ref cmdComponent, 1024, ImGuiInputTextFlags.NoHorizontalScroll);
+
+                                    if (ImGui.IsItemEdited())
+                                    {
+                                        fileFolderNode.PlayCommand[i] = cmdComponent;
+                                        edited = true;
+                                    }
+                                }
+
+                                ImGui.SameLine();
+
+                                ImGui.AlignTextToFramePadding();
+                                ImGui.TextUnformatted("<path to file>");
+
+                                ImGui.SameLine();
+
+                                ImGui.BeginDisabled(fileFolderNode.PlayCommand.Count == 1);
+                                if (ImGui.Button("-"))
+                                {
+                                    fileFolderNode.PlayCommand.RemoveAt(fileFolderNode.PlayCommand.Count - 1);
+                                    edited = true;
+                                }
+                                ImGui.EndDisabled();
+
+                                ImGui.SameLine();
+
+                                if (ImGui.Button("+"))
+                                {
+                                    fileFolderNode.PlayCommand.Add("");
+                                    edited = true;
+                                }
+                            }
+                        }
+
+                        ImGui.Separator();
+
+                        ImGui.TextUnformatted("Filetypes supported:");
+
+                        foreach (string fileType in GetFileTypesInDir(fileFolderNode.DirPath))
+                        {
+                            bool included = fileFolderNode.SupportedExtensions.Contains(fileType);
+
+                            if (ImGui.Checkbox(fileType, ref included))
+                            {
+                                if (included)
+                                {
+                                    fileFolderNode.SupportedExtensions.Add(fileType);
+                                }
+                                else
+                                {
+                                    fileFolderNode.SupportedExtensions.Remove(fileType);
+                                }
+                                edited = true;
+                            }
+                        }
+                    }
+                }
             }
 
             ImGui.PopID();
