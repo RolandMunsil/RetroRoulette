@@ -25,30 +25,19 @@ namespace RetroRoulette
     class SavedConfig
     {
         [JsonPolymorphic(TypeDiscriminatorPropertyName = "Type")]
-        [JsonDerivedType(typeof(GamesNode), "FileFolder")]
+        [JsonDerivedType(typeof(FileFolderNode), "FileFolder")]
         [JsonDerivedType(typeof(GroupNode), "Group")]
+        [JsonDerivedType(typeof(NameListNode), "NameList")]
         public class Node 
         {
             public int id = 0;
             private string name = "";
 
-            [JsonPropertyOrder(-1)]
+            [JsonPropertyOrder(-2)]
             public string Name { get => name; set => name = value; }
 
             [JsonIgnore]
             public ref string NameEditable => ref name;
-        }
-
-        public class GamesNode : Node
-        {
-            private string dirPath = "";
-
-            public string DirPath { get => dirPath; set => dirPath = value; }
-            public bool Enabled { get; set; } = true;
-            public double Weight { get; set; } = 0;
-
-            [JsonIgnore]
-            public ref string DirPathEditable => ref dirPath;
         }
 
         public class GroupNode : Node
@@ -56,7 +45,30 @@ namespace RetroRoulette
             public List<Node> ChildNodes { get; set; } = new List<Node>();
         }
 
-        public GroupNode RootNode { get; set; } = new GroupNode(); // TODO how do we handle first time starting up when this is the only node
+        public abstract class GamesNode : Node
+        {
+            [JsonPropertyOrder(-1)]
+            public bool Enabled { get; set; } = true;
+            [JsonPropertyOrder(-1)]
+            public double Weight { get; set; } = 0;
+        }
+
+        public class FileFolderNode : GamesNode
+        {
+            private string dirPath = "";
+            public string DirPath { get => dirPath; set => dirPath = value; }
+
+            [JsonIgnore]
+            public ref string DirPathEditable => ref dirPath;
+        }
+
+        public class NameListNode : GamesNode
+        {
+            public string[] NameList { get; set; } = { };
+            public string[] PlayCommand { get; set; } = { };
+        }
+
+        public GroupNode RootNode { get; set; } = new GroupNode();
 
         /////////////////////////////////////////////////////////////////////////
 
@@ -79,6 +91,58 @@ namespace RetroRoulette
                 }
             }
         }
+    }
+
+    abstract class Game
+    {
+        public string name;
+        public Node ownerNode;
+
+        public Game(string name, Node ownerNode)
+        {
+            this.name = name;
+            this.ownerNode = ownerNode;
+        }
+
+        public abstract IEnumerable<string> Variants();
+        public abstract string DefaultVariant();
+        public abstract void PlayVariant(string variant);
+
+        public bool MatchesNameFilter(string nameFilter)
+        {
+            // TODO match against a version with no punctuation?
+
+            return nameFilter.Length == 0 || name.Contains(nameFilter, StringComparison.CurrentCultureIgnoreCase);
+        }
+    }
+
+    class SimpleGame : Game
+    {
+        private string[] playCommand;
+
+        public SimpleGame(string name, Node ownerNode, string[] playCommand)
+            : base(name, ownerNode)
+        {
+            this.playCommand = playCommand;
+        }
+
+        public override string DefaultVariant() => "";
+        public bool CanPlay => playCommand.Length > 0;
+        public override void PlayVariant(string variant)
+        {
+            Debug.Assert(CanPlay);
+
+            Process p = new Process();
+
+            p.StartInfo.FileName = playCommand[0];
+            foreach (string arg in playCommand.Skip(1))
+                p.StartInfo.ArgumentList.Add(arg);
+
+            p.StartInfo.WorkingDirectory = Path.GetDirectoryName(playCommand[0]);
+            p.Start();
+        }
+
+        public override IEnumerable<string> Variants() => new[] { "" };
     }
 
     class ROM
@@ -111,13 +175,14 @@ namespace RetroRoulette
                 //     - Commodore 64?
                 //     - Others? ZX Spectrum?
                 //  - MAME arcade games
-                //  - Steam games (just locally installed? need to figure out if there's a way to get the local user's full list of owned games)
                 //  - Bluemaxima Flashpoint? Open up the SQLite databse in Data/. Maybe use the main curated list as an optional filter?
                 //  - Other random weird systems: Game Master, GP32, Pokemon Mini, Tiger Game.com, Watara Supervision,
                 //    LeapFrog Leapster, VTech V.Smile, Amiga CD32, Commodore CDTV, Funtech Super A'Can, 
                 //    Atari 7800, Philips Videopac+ G7400, Sega SG-1000, Super Casette Vision, Arcadia 2001,
                 //    Atari 2600, Atari 5200, ColecoVision, Entex Adventure Vision, Fairchild Channel F, Intellivision
                 //    Magnavox Odyssey2, RCA Studio II, Vectrex, VTech Creativision. Others?
+
+                // TODO for file folder - list filetypes found in folder, allow user to check them, and allow them to pick a program to launch for the folder
 
                 // Feature/improvement ideas:
                 // - multithread startup
@@ -184,20 +249,21 @@ namespace RetroRoulette
         }
     }
 
-    class Game
+    class ROMSet : Game
     {
-        public string name;
-        public GamesNode gamesNode;
-        public IEnumerable<ROM> roms;
+        protected IEnumerable<ROM> roms;
 
-        public Game(string name, GamesNode gamesNode, IEnumerable<ROM> roms)
+        public ROMSet(string name, FileFolderNode gamesNode, IEnumerable<ROM> roms)
+            : base(name, gamesNode)
         {
-            this.name = name;
-            this.gamesNode = gamesNode;
             this.roms = roms;
         }
 
-        public ROM DefaultROM()
+        public override IEnumerable<string> Variants() => roms.Select(rom => rom.details.PropsString());
+        public override string DefaultVariant() => DefaultROM().details.PropsString();
+        public override void PlayVariant(string variant) => roms.First(rom => rom.details.PropsString() == variant).Play();
+
+        protected ROM DefaultROM()
         {
             List<ROM> filteredRoms = new List<ROM>(roms);
 
@@ -214,13 +280,6 @@ namespace RetroRoulette
             }
 
             return filteredRoms.First();
-        }
-
-        public bool MatchesNameFilter(string nameFilter)
-        {
-            // TODO match against a version with no punctuation?
-
-            return nameFilter.Length == 0 || name.Contains(nameFilter, StringComparison.CurrentCultureIgnoreCase);
         }
     }
 
@@ -246,39 +305,37 @@ namespace RetroRoulette
         public abstract SavedConfig.Node ToSavedConfigNode();
     }
 
-    class GamesNode : Node
+    abstract class GamesNode : Node
     {
-        private readonly string dirPath;
-        private readonly List<Game> games;
-
         public override bool Enabled { get; set; }
         public override double Weight { get; set; }
         public override double EffectiveWeight => (Enabled && AnyGamesMatchFilter) ? Weight : 0;
 
+        public GamesNode(SavedConfig.GamesNode savedConfigGamesNode)
+            : base(savedConfigGamesNode.id, savedConfigGamesNode.Name)
+        {
+            Enabled = savedConfigGamesNode.Enabled;
+            Weight = savedConfigGamesNode.Weight;
+        }
+
+        public void ResetWeight()
+        {
+            Weight = Games.Count();
+        }
+    }
+
+    class NameListNode : GamesNode
+    {
+        private readonly List<SimpleGame> games;
+        private readonly string[] playCommand;
+
         public override IEnumerable<Game> Games => games;
 
-        public GamesNode(SavedConfig.GamesNode savedConfgGamesNode)
-            : base(savedConfgGamesNode.id, savedConfgGamesNode.Name)
+        public NameListNode(SavedConfig.NameListNode savedConfigNameListNode)
+            : base(savedConfigNameListNode)
         {
-            dirPath = savedConfgGamesNode.DirPath;
-
-            if (Directory.Exists(dirPath))
-            {
-                games = Directory.EnumerateFiles(dirPath, "*", SearchOption.AllDirectories)
-                    .Where(filePath => !ROMNameParser.IsBios(filePath))
-                    .Select(filePath => new ROM(filePath, name))
-                    .Where(rom => rom.CanPlay)
-                    .GroupBy(rom => rom.details.name)
-                    .Select(grouping => new Game(grouping.Key, this, grouping))
-                    .ToList();
-            }
-            else
-            {
-                games = new List<Game>();
-            }
-
-            Enabled = savedConfgGamesNode.Enabled;
-            Weight = savedConfgGamesNode.Weight;
+            playCommand = savedConfigNameListNode.PlayCommand;
+            games = savedConfigNameListNode.NameList.Select(s => new SimpleGame(s, this, playCommand)).ToList();
 
             if (Weight == 0)
             {
@@ -288,7 +345,54 @@ namespace RetroRoulette
 
         public override SavedConfig.Node ToSavedConfigNode()
         {
-            return new SavedConfig.GamesNode()
+            return new SavedConfig.NameListNode()
+            {
+                id = id,
+                Name = name,
+                Enabled = Enabled,
+                Weight = Weight,
+                NameList = games.Select(g => g.name).ToArray(),
+                PlayCommand = playCommand,
+            };
+        }
+    }
+
+    class FileFolderNode : GamesNode
+    {
+        private readonly string dirPath;
+        private readonly List<ROMSet> romsets;
+
+        public override IEnumerable<Game> Games => romsets;
+
+        public FileFolderNode(SavedConfig.FileFolderNode savedConfigFileFolderNode)
+            : base(savedConfigFileFolderNode)
+        {
+            dirPath = savedConfigFileFolderNode.DirPath;
+
+            if (Directory.Exists(dirPath))
+            {
+                romsets = Directory.EnumerateFiles(dirPath, "*", SearchOption.AllDirectories)
+                    .Where(filePath => !ROMNameParser.IsBios(filePath))
+                    .Select(filePath => new ROM(filePath, name))
+                    .Where(rom => rom.CanPlay)
+                    .GroupBy(rom => rom.details.name)
+                    .Select(grouping => new ROMSet(grouping.Key, this, grouping))
+                    .ToList();
+            }
+            else
+            {
+                romsets = new List<ROMSet>();
+            }
+
+            if (Weight == 0)
+            {
+                Weight = romsets.Count;
+            }
+        }
+
+        public override SavedConfig.Node ToSavedConfigNode()
+        {
+            return new SavedConfig.FileFolderNode()
             {
                 id = id,
                 Name = name,
@@ -296,11 +400,6 @@ namespace RetroRoulette
                 Weight = Weight,
                 DirPath = dirPath
             };
-        }
-
-        public void ResetWeight()
-        {
-            Weight = games.Count;
         }
     }
 
@@ -339,9 +438,13 @@ namespace RetroRoulette
                 {
                     subNodes.Add(new GroupNode(childGroupNode));
                 }
-                else if (childNode is SavedConfig.GamesNode childGamesNode)
+                else if (childNode is SavedConfig.FileFolderNode childFileFolderNode)
                 {
-                    subNodes.Add(new GamesNode(childGamesNode));
+                    subNodes.Add(new FileFolderNode(childFileFolderNode));
+                }
+                else if (childNode is SavedConfig.NameListNode childNameListNode)
+                {
+                    subNodes.Add(new NameListNode(childNameListNode));
                 }
             }
         }
@@ -386,7 +489,7 @@ namespace RetroRoulette
                     if (node is GamesNode gamesNode)
                     {
                         List<Game> games = gamesNode.FilteredGames.ToList();
-                        return games[Random.Shared.Next(games.Count - 1)];
+                        return games[Random.Shared.Next(games.Count)];
                     }
                     else if (node is GroupNode groupNode)
                     {
@@ -403,12 +506,12 @@ namespace RetroRoulette
     {
         public bool spinning;
         private Game? game;
-        public ROM? rom;
+        public string? variant;
 
         public Game? Game
         {
             get { return game; }
-            set { game = value; rom = (game == null) ? null : game.DefaultROM(); }
+            set { game = value; variant = (game == null) ? null : game.DefaultVariant(); }
         }
 
         public Reel(Game? game)
@@ -424,6 +527,8 @@ namespace RetroRoulette
         static ImFontPtr font30;
         static ImFontPtr font40;
 
+        static bool renderImguiDemo = false;
+
         // Reels
 
         static int nReels = 3;
@@ -436,6 +541,7 @@ namespace RetroRoulette
 
         static GroupNode rootNode;
         public static string gameNameFilter = "";
+
 
         static Node? nodeDraggedProgressBar = null;
 
@@ -548,6 +654,22 @@ namespace RetroRoulette
                         ImGui.EndTabItem();
                     }
 
+                    if (renderImguiDemo)
+                    {
+                        if (ImGui.BeginTabItem("ImGui Demo"))
+                        {
+                            ImGui.ShowDemoWindow();
+                            ImGui.EndTabItem();
+                        }
+                    }
+                    else
+                    {
+                        if (ImGui.IsKeyPressed(ImGuiKey.Home))
+                        {
+                            renderImguiDemo = true;
+                        }
+                    }
+
                     ImGui.EndTabBar();
                 }
             }
@@ -566,24 +688,29 @@ namespace RetroRoulette
             ImGui.SameLine();
             ImGui.Text($"{matchingGames.Count}");
 
-            if (ImGui.BeginTable("matches", 2, ImGuiTableFlags.ScrollY)) // TODO first col width
+            if (ImGui.BeginTable("matches", 3, ImGuiTableFlags.ScrollY)) // TODO first col width
             {
                 const int maxDisplayed = 100;
 
                 foreach (Game game in matchingGames.Take(maxDisplayed)) // TODO allow more
                 {
-                    foreach (ROM rom in game.roms)
+                    foreach (string variant in game.Variants())
                     {
                         ImGui.TableNextRow();
 
                         ImGui.TableNextColumn();
 
-                        ImGui.TextUnformatted(game.gamesNode.name);
+                        ImGui.TextUnformatted(game.ownerNode.name);
 
                         ImGui.TableNextColumn();
 
-                        if (ImGui.Selectable(Path.GetFileName(rom.path)))
-                            rom.Play();
+                        ImGui.TextUnformatted(game.name);
+
+                        ImGui.TableNextColumn();
+
+                        bool selected = false;
+                        if (ImGui.Selectable($"{variant}##{game.name}/{game.ownerNode.name}", ref selected, ImGuiSelectableFlags.SpanAllColumns))
+                            game.PlayVariant(variant);
                     }
                 }
 
@@ -806,7 +933,7 @@ namespace RetroRoulette
                             ImGui.TextWrapped(game.name);
                         }
                         ImGui.PopFont();
-                        ImGui.Text(game.gamesNode.name);
+                        ImGui.Text(game.ownerNode.name);
 
                         if (reel.spinning)
                             ImGui.PopStyleColor();
@@ -818,15 +945,15 @@ namespace RetroRoulette
 
                         if (!reel.spinning)
                         {
-                            ImGui.BeginDisabled(game.roms.Count() == 1);
+                            ImGui.BeginDisabled(game.Variants().Count() == 1);
 
-                            if (ImGui.BeginCombo($"##options{game.gamesNode.name}+{game.name}", reel.rom!.details.PropsString()))
+                            if (ImGui.BeginCombo($"##options{game.ownerNode.name}+{game.name}", reel.variant))
                             {
-                                foreach (ROM romSelectable in game.roms)
+                                foreach (string variant in game.Variants())
                                 {
-                                    if (ImGui.Selectable(romSelectable.details.PropsString()))
+                                    if (ImGui.Selectable(variant))
                                     {
-                                        reel.rom = romSelectable;
+                                        reel.variant = variant;
                                     }
                                 }
 
@@ -835,14 +962,12 @@ namespace RetroRoulette
 
                             ImGui.EndDisabled();
 
-                            if (ImGui.Button($"Play##{game.gamesNode}+{game.name}"))
-                                reel.rom.Play();
+                            if (ImGui.Button($"Play##{game.ownerNode}+{game.name}"))
+                                game.PlayVariant(reel.variant);
                         }
                     }
                     else
                     {
-                        ImGui.TableNextColumn();
-
                         ImGui.TableNextColumn();
                         ImGui.PushFont(font30);
                         ImGui.Text("[No games match filters]");
@@ -961,11 +1086,12 @@ namespace RetroRoulette
 
         private static void RenderConfigTab()
         {
-            if (ImGui.BeginTable("nodetree", 3))
+            if (ImGui.BeginTable("nodetree", 4))
             {
                 ImGui.TableSetupColumn("name", ImGuiTableColumnFlags.WidthFixed | ImGuiTableColumnFlags.IndentEnable, 300); // TODO dynamic size
                 ImGui.TableSetupColumn("buttons", ImGuiTableColumnFlags.WidthFixed, 207);
                 ImGui.TableSetupColumn("props", ImGuiTableColumnFlags.WidthStretch);
+                ImGui.TableSetupColumn("commands", ImGuiTableColumnFlags.WidthStretch);
 
                 using (StyleContext sctxNodetree = new StyleContext())
                 {
@@ -994,6 +1120,8 @@ namespace RetroRoulette
             {
                 rootNode = new GroupNode(savedconfigRootNodePendingSave);
                 savedconfigRootNodePendingSave = null;
+
+                // TODO actually save
             }
 
             ImGui.SameLine();
@@ -1093,7 +1221,7 @@ namespace RetroRoulette
 
                                 if (!isThisNode && groupNodeChild.ChildNodes.Any(c => c is SavedConfig.GroupNode))
                                 {
-                                    if (ImGui.BeginMenu(groupNodeChild.Name))
+                                    if (ImGui.BeginMenu($"{groupNodeChild.Name}##{groupNodeChild.id}"))
                                     {
                                         RenderMenu(groupNodeChild, ref edited);
                                         ImGui.EndMenu();
@@ -1102,7 +1230,7 @@ namespace RetroRoulette
                                 else
                                 {
                                     ImGui.BeginDisabled(isThisNode);
-                                    ImGui.Selectable(groupNodeChild.Name);
+                                    ImGui.Selectable($"{groupNodeChild.Name}##{groupNodeChild.id}");
                                     ImGui.EndDisabled();
                                 }
 
@@ -1142,17 +1270,33 @@ namespace RetroRoulette
 
                     if (ImGui.IsPopupOpen("add") && ImGui.BeginPopup("add"))
                     {
-                        // TODO these need ids!!
+                        static int MaxId(SavedConfig.Node node)
+                        {
+                            if (node is SavedConfig.GroupNode groupNode && groupNode.ChildNodes.Any())
+                            {
+                                return Math.Max(node.id, groupNode.ChildNodes.Max(MaxId));
+                            }
+                            else
+                            {
+                                return node.id;
+                            }
+                        };
 
                         if (ImGui.Selectable("Group"))
                         {
-                            groupNode.ChildNodes.Add(new SavedConfig.GroupNode());
+                            groupNode.ChildNodes.Add(new SavedConfig.GroupNode() { id = MaxId(rootNode) + 1 });
                             edited = true;
                         }
 
                         if (ImGui.Selectable("File Folder"))
                         {
-                            groupNode.ChildNodes.Add(new SavedConfig.GamesNode());
+                            groupNode.ChildNodes.Add(new SavedConfig.FileFolderNode() { id = MaxId(rootNode) + 1 });
+                            edited = true;
+                        }
+
+                        if (ImGui.Selectable("Name List"))
+                        {
+                            groupNode.ChildNodes.Add(new SavedConfig.NameListNode() { id = MaxId(rootNode) + 1 });
                             edited = true;
                         }
 
@@ -1164,10 +1308,10 @@ namespace RetroRoulette
             ImGui.TableNextColumn();
 
             {
-                if (node is SavedConfig.GamesNode gamesNode)
+                if (node is SavedConfig.FileFolderNode fileFolderNode)
                 {
                     ImGui.SetNextItemWidth(-float.Epsilon);
-                    ImGui.InputText("##pathedit", ref gamesNode.DirPathEditable, 512);
+                    ImGui.InputText("##pathedit", ref fileFolderNode.DirPathEditable, 512);
 
                     if (ImGui.IsItemEdited())
                         edited = true;
@@ -1179,6 +1323,83 @@ namespace RetroRoulette
                     //    ImGui.Text("oh no!");
                     //}
                 }
+                else if (node is SavedConfig.NameListNode nameListNode)
+                {
+                    int count = nameListNode.NameList.Length;
+                    if (ImGui.CollapsingHeader($"{count} name{(count == 1 ? "" : "s")}...###stringlistheader"))
+                    {
+                        string namesList = String.Join('\n', nameListNode.NameList);
+
+                        // TODO when user hits ctrl+v, increase string size by size of clipboard
+
+                        ImGui.InputTextMultiline("##names", ref namesList, (uint)namesList.Length + 262144, new Vector2(-float.Epsilon, 200));
+
+                        if (ImGui.IsItemEdited())
+                        {
+                            nameListNode.NameList = namesList.Split('\n').Select(s => s.Trim()).Where(s => !String.IsNullOrEmpty(s)).ToArray();
+                            edited = true;
+                        }
+                    }
+                }
+            }
+
+            ImGui.TableNextColumn();
+
+            {
+                if (node is SavedConfig.NameListNode nameListNode)
+                {
+                    if (ImGui.CollapsingHeader("Play command..."))
+                    {
+                        {
+                            bool isNone = nameListNode.PlayCommand.Length == 0;
+
+                            ImGui.BeginDisabled(isNone);
+                            if (ImGui.Checkbox("##none", ref isNone))
+                            {
+                                nameListNode.PlayCommand = new string[] { };
+                                edited = true;
+                            }
+                            ImGui.EndDisabled();
+
+                            ImGui.SameLine(0, ImGui.GetStyle().ItemInnerSpacing.X);
+                            ImGui.AlignTextToFramePadding();
+                            ImGui.TextUnformatted("None");
+                        }
+
+                        {
+                            bool isProgram = nameListNode.PlayCommand.Length > 0;
+
+                            ImGui.BeginDisabled(isProgram);
+                            if (ImGui.Checkbox("##program", ref isProgram))
+                            {
+                                nameListNode.PlayCommand = new[] { "" };
+                                edited = true;
+                            }
+                            ImGui.EndDisabled();
+
+                            ImGui.SameLine(0, ImGui.GetStyle().ItemInnerSpacing.X);
+                            ImGui.AlignTextToFramePadding();
+                            ImGui.TextUnformatted(isProgram ? "Program: " : "Program");
+
+                            if (isProgram)
+                            {
+                                ImGui.SameLine();
+
+                                string programName = nameListNode.PlayCommand[0];
+                                ImGui.SetNextItemWidth(-float.Epsilon);
+                                ImGui.InputText("##programname", ref programName, 1024);
+
+                                if (ImGui.IsItemEdited())
+                                {
+                                    nameListNode.PlayCommand[0] = programName;
+                                    edited = true;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // TODO support file folders
             }
 
             ImGui.PopID();
@@ -1200,29 +1421,26 @@ namespace RetroRoulette
             
             if (handleDrag)
             {
-                if (ImGui.GetMousePos().Y < dragAreaYMin || ImGui.GetMousePos().Y > dragAreaYMax)
+                if (ImGui.GetMousePos().Y < dragAreaYMin)
                 {
-                    // TODO this gets confused if you drag quickly enough to cross two rows at once (I think?)
-
-                    int dirNext = Math.Sign(ImGui.GetMouseDragDelta().Y);
-
                     int i = parentNode.ChildNodes.IndexOf(node);
 
-                    if (dirNext == -1 && i > 0)
+                    if (i > 0)
                     {
                         parentNode.ChildNodes.RemoveAt(i);
                         parentNode.ChildNodes.Insert(i - 1, node);
                         edited = true;
-
-                        ImGui.ResetMouseDragDelta();
                     }
-                    else if (dirNext == 1 && i < (parentNode.ChildNodes.Count - 1))
+                }
+                else if (ImGui.GetMousePos().Y > dragAreaYMax)
+                {
+                    int i = parentNode.ChildNodes.IndexOf(node);
+
+                    if (i < (parentNode.ChildNodes.Count - 1))
                     {
                         parentNode.ChildNodes.RemoveAt(i);
                         parentNode.ChildNodes.Insert(i + 1, node);
                         edited = true;
-
-                        ImGui.ResetMouseDragDelta();
                     }
                 }
             }
