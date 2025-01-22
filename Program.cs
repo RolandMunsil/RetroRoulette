@@ -12,6 +12,7 @@ using System.Runtime.Intrinsics.Arm;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
+using System.Threading;
 using System.Xml.Linq;
 using Veldrid;
 using Veldrid.MetalBindings;
@@ -21,29 +22,17 @@ using Vulkan.Xlib;
 using static RetroRoulette.SavedConfig;
 
 // Ideas for stuff to add support for:
-//  - PC games
-//     - Windows games (old '95/'98, more modern 2000s)
-//     - MS-DOS games
-//     - MSX?
-//     - Apple II (and etc.)
-//     - Amiga
-//     - Macintosh (shareware?)
-//     - Commodore 64?
-//     - Others? ZX Spectrum?
 //  - MAME arcade games
 //  - Bluemaxima Flashpoint? Open up the SQLite databse in Data/. Maybe use the main curated list as an optional filter?
 //  - itch.io games?
-//  - Other random weird systems: Game Master, GP32, Pokemon Mini, Tiger Game.com, Watara Supervision,
-//    LeapFrog Leapster, VTech V.Smile, Amiga CD32, Commodore CDTV, Funtech Super A'Can, 
-//    Atari 7800, Philips Videopac+ G7400, Sega SG-1000, Super Casette Vision, Arcadia 2001,
-//    Atari 2600, Atari 5200, ColecoVision, Entex Adventure Vision, Fairchild Channel F, Intellivision
-//    Magnavox Odyssey2, RCA Studio II, Vectrex, VTech Creativision. Others?
 
 // Feature/improvement ideas:
 // - multithread startup
 // - list roms that weren't playable
 // - option to hide names but not systems (in reels)
 // - filters for additional flags on ROMs, and regions. E.g. only play unlicensed games, or only play Korean games
+// - maybe a way to tag folder as being type X of a type group. e.g. could tag as "popular" or "obscure" and have that as a separate weight adjustment
+//   - "Axes"
 // - some way of creating custom tags/collections? would be cool to do like a "Classics of Game" night
 // - support using no-intro, redump, etc xmls to get more info about ROMs?
 // - use xmls to group games with different names? maybe even group games across multiple systems?
@@ -79,6 +68,8 @@ namespace RetroRoulette
             public bool Enabled { get; set; } = true;
             [JsonPropertyOrder(-1)]
             public double Weight { get; set; } = 0;
+
+            public abstract void RenderConfigEditor(ref bool edited);
         }
 
         public class FileFolderNode : GamesNode
@@ -88,14 +79,174 @@ namespace RetroRoulette
             public List<string> PlayCommand { get; set; } = new List<string>();
             public List<string> SupportedExtensions { get; set; } = new List<string>();
 
-            [JsonIgnore]
-            public ref string DirPathEditable => ref dirPath;
+            public override void RenderConfigEditor(ref bool edited)
+            {
+                ImGui.SetNextItemWidth(400);
+                ImGui.InputText("##pathedit", ref dirPath, 512);
+
+                if (ImGui.IsItemEdited())
+                    edited = true;
+
+                // TODO
+
+                //if (!Directory.Exists(dirPathEdit))
+                //{
+                //    ImGui.Text("oh no!");
+                //}
+
+                ImGui.SameLine();
+
+                ImGui.SetNextItemWidth(150);
+
+                if (ImGui.BeginCombo("##extensions", (SupportedExtensions.Count == 0) ? "(no filetypes selected)" : String.Join(", ", SupportedExtensions)))
+                {
+                    foreach (string fileType in Program.GetFileTypesInDir(DirPath))
+                    {
+                        bool included = SupportedExtensions.Contains(fileType);
+
+                        if (ImGui.Checkbox(fileType, ref included))
+                        {
+                            if (included)
+                            {
+                                SupportedExtensions.Add(fileType);
+                            }
+                            else
+                            {
+                                SupportedExtensions.Remove(fileType);
+                            }
+                            edited = true;
+                        }
+                    }
+
+                    ImGui.EndCombo();
+                }
+
+                ImGui.SameLine();
+
+                ImGui.SetNextItemWidth(150);
+                if (ImGui.BeginCombo("##action", (PlayCommand.Count == 0) ? "(no play action)" : "Launch Program:"))
+                {
+                    if (ImGui.Selectable("None"))
+                    {
+                        PlayCommand.Clear();
+                        edited = true;
+                    }
+
+                    if (ImGui.Selectable("Launch program..."))
+                    {
+                        PlayCommand = new List<string> { "" };
+                        edited = true;
+                    }
+
+                    ImGui.EndCombo();
+                }
+
+                if (PlayCommand.Count > 0)
+                {
+                    ImGui.SameLine();
+
+                    for (int i = 0; i < PlayCommand.Count; i++)
+                    {
+                        ImGui.SameLine();
+
+                        string cmdComponent = PlayCommand[i];
+
+                        ImGui.SetNextItemWidth(Math.Max(20, ImGui.CalcTextSize(cmdComponent).X + ImGui.GetStyle().FramePadding.X * 2));
+                        ImGui.InputText($"##programname-{i}", ref cmdComponent, 1024, ImGuiInputTextFlags.NoHorizontalScroll);
+
+                        if (ImGui.IsItemEdited())
+                        {
+                            PlayCommand[i] = cmdComponent;
+                            edited = true;
+                        }
+                    }
+
+                    ImGui.SameLine();
+
+                    ImGui.AlignTextToFramePadding();
+                    ImGui.TextUnformatted("<path to file>");
+
+                    ImGui.SameLine();
+
+                    ImGui.BeginDisabled(PlayCommand.Count == 1);
+                    if (ImGui.Button("-"))
+                    {
+                        PlayCommand.RemoveAt(PlayCommand.Count - 1);
+                        edited = true;
+                    }
+                    ImGui.EndDisabled();
+
+                    ImGui.SameLine();
+
+                    if (ImGui.Button("+"))
+                    {
+                        PlayCommand.Add("");
+                        edited = true;
+                    }
+                }
+            }
         }
 
         public class NameListNode : GamesNode
         {
-            public string[] NameList { get; set; } = { };
-            public string[] PlayCommand { get; set; } = { };
+            public List<string> NameList { get; set; } = new List<string>();
+            public List<string> PlayCommand { get; set; } = new List<string>();
+
+            public override void RenderConfigEditor(ref bool edited)
+            {
+                ImGui.SetNextItemWidth(150);
+                if (ImGui.BeginCombo("##aa", $"{NameList.Count} name{(NameList.Count == 1 ? "" : "s")}...###stringlistheader", ImGuiComboFlags.HeightLargest))
+                {
+                    string namesList = String.Join('\n', NameList);
+
+                    // TODO when user hits ctrl+v, increase string size by size of clipboard
+
+                    ImGui.InputTextMultiline("##names", ref namesList, (uint)namesList.Length + 262144, new Vector2(-float.Epsilon, 200));
+
+                    if (ImGui.IsItemEdited())
+                    {
+                        NameList = namesList.Split('\n').Select(s => s.Trim()).Where(s => !String.IsNullOrEmpty(s)).ToList();
+                        edited = true;
+                    }
+
+                    ImGui.EndCombo();
+                }
+
+                ImGui.SameLine();
+
+                ImGui.SetNextItemWidth(150);
+                if (ImGui.BeginCombo("##action", (PlayCommand.Count == 0) ? "(no play action)" : "Launch Program:"))
+                {
+                    if (ImGui.Selectable("None"))
+                    {
+                        PlayCommand.Clear();
+                        edited = true;
+                    }
+
+                    if (ImGui.Selectable("Launch program..."))
+                    {
+                        PlayCommand = new List<string> { "" };
+                        edited = true;
+                    }
+
+                    ImGui.EndCombo();
+                }
+
+                if (PlayCommand.Count > 0)
+                {
+                    ImGui.SameLine();
+
+                    string programName = PlayCommand[0];
+                    ImGui.SetNextItemWidth(-float.Epsilon);
+                    ImGui.InputText("##programname", ref programName, 1024);
+
+                    if (ImGui.IsItemEdited())
+                    {
+                        PlayCommand[0] = programName;
+                        edited = true;
+                    }
+                }
+            }
         }
 
         public GroupNode RootNode { get; set; } = new GroupNode();
@@ -136,6 +287,7 @@ namespace RetroRoulette
 
         public abstract IEnumerable<string> Variants();
         public abstract string DefaultVariant();
+        public abstract bool IsPlayable { get; }
         public abstract void PlayVariant(string variant);
 
         public bool MatchesNameFilter(string nameFilter)
@@ -157,10 +309,10 @@ namespace RetroRoulette
         }
 
         public override string DefaultVariant() => "";
-        public bool CanPlay => playCommand.Length > 0;
+        public override bool IsPlayable => playCommand.Length > 0;
         public override void PlayVariant(string variant)
         {
-            Debug.Assert(CanPlay);
+            Debug.Assert(IsPlayable);
 
             Process p = new Process();
 
@@ -199,6 +351,7 @@ namespace RetroRoulette
 
         public override IEnumerable<string> Variants() => roms.Select(rom => rom.details.PropsString());
         public override string DefaultVariant() => DefaultROM().details.PropsString();
+        public override bool IsPlayable => (ownerNode as FileFolderNode).PlayCommand.Count() > 0;
         public override void PlayVariant(string variant)
         {
             ROM rom = roms.First(rom => rom.details.PropsString() == variant);
@@ -281,15 +434,15 @@ namespace RetroRoulette
     class NameListNode : GamesNode
     {
         private readonly List<SimpleGame> games;
-        private readonly string[] playCommand;
+        private readonly List<string> playCommand;
 
         public override IEnumerable<Game> Games => games;
 
         public NameListNode(SavedConfig.NameListNode savedConfigNameListNode)
             : base(savedConfigNameListNode)
         {
-            playCommand = savedConfigNameListNode.PlayCommand;
-            games = savedConfigNameListNode.NameList.Select(s => new SimpleGame(s, this, playCommand)).ToList();
+            playCommand = new List<string>(savedConfigNameListNode.PlayCommand);
+            games = savedConfigNameListNode.NameList.Select(s => new SimpleGame(s, this, playCommand.ToArray())).ToList();
 
             if (Weight == 0)
             {
@@ -305,8 +458,8 @@ namespace RetroRoulette
                 Name = name,
                 Enabled = Enabled,
                 Weight = Weight,
-                NameList = games.Select(g => g.name).ToArray(),
-                PlayCommand = playCommand,
+                NameList = games.Select(g => g.name).ToList(),
+                PlayCommand = new List<string>(playCommand),
             };
         }
     }
@@ -318,36 +471,56 @@ namespace RetroRoulette
         public IEnumerable<string> PlayCommand => playCommand;
         private readonly List<string> supportedExtensions;
 
-        private readonly List<ROMSet> romsets;
+        private List<ROMSet> romsets;
 
         public override IEnumerable<Game> Games => romsets;
+
+        class RomsetsBgTask : BackgroundTask
+        {
+            private FileFolderNode fileFolderNode;
+            private List<ROMSet> romsets;
+
+            public RomsetsBgTask(FileFolderNode fileFolderNode)
+            {
+                this.fileFolderNode = fileFolderNode;
+                this.romsets = new List<ROMSet>();
+                StartWorkThread();
+            }
+
+            protected override void DoWork()
+            {
+                if (Directory.Exists(fileFolderNode.dirPath))
+                {
+                    romsets = Directory.EnumerateFiles(fileFolderNode.dirPath, "*", SearchOption.AllDirectories)
+                    .Where(filePath => fileFolderNode.supportedExtensions.Contains(Path.GetExtension(filePath)))
+                    .Where(filePath => !ROMNameParser.IsBios(filePath)) // TODO
+                    .Select(filePath => new ROM(filePath))
+                    .GroupBy(rom => rom.details.name)
+                    .Select(grouping => new ROMSet(grouping.Key, fileFolderNode, grouping))
+                    .ToList();
+                }
+            }
+
+            protected override void OnWorkComplete()
+            {
+                fileFolderNode.romsets = romsets;
+
+                if (fileFolderNode.Weight == 0)
+                {
+                    fileFolderNode.Weight = romsets.Count;
+                }
+            }
+        }
 
         public FileFolderNode(SavedConfig.FileFolderNode savedConfigFileFolderNode)
             : base(savedConfigFileFolderNode)
         {
             dirPath = savedConfigFileFolderNode.DirPath;
-            playCommand = savedConfigFileFolderNode.PlayCommand;
-            supportedExtensions = savedConfigFileFolderNode.SupportedExtensions;
+            playCommand = new List<string>(savedConfigFileFolderNode.PlayCommand);
+            supportedExtensions = new List<string>(savedConfigFileFolderNode.SupportedExtensions);
 
-            if (Directory.Exists(dirPath))
-            {
-                romsets = Directory.EnumerateFiles(dirPath, "*", SearchOption.AllDirectories)
-                    .Where(filePath => supportedExtensions.Contains(Path.GetExtension(filePath)))
-                    .Where(filePath => !ROMNameParser.IsBios(filePath)) // TODO
-                    .Select(filePath => new ROM(filePath))
-                    .GroupBy(rom => rom.details.name)
-                    .Select(grouping => new ROMSet(grouping.Key, this, grouping))
-                    .ToList();
-            }
-            else
-            {
-                romsets = new List<ROMSet>();
-            }
-
-            if (Weight == 0)
-            {
-                Weight = romsets.Count;
-            }
+            romsets = new List<ROMSet>();
+            Program.AddBackgroundTask(new RomsetsBgTask(this));
         }
 
         public override SavedConfig.Node ToSavedConfigNode()
@@ -359,8 +532,8 @@ namespace RetroRoulette
                 Enabled = Enabled,
                 Weight = Weight,
                 DirPath = dirPath,
-                PlayCommand = playCommand,
-                SupportedExtensions = supportedExtensions,
+                PlayCommand = new List<string>(playCommand),
+                SupportedExtensions = new List<string>(supportedExtensions),
             };
         }
     }
@@ -483,6 +656,33 @@ namespace RetroRoulette
         }
     }
 
+    abstract class BackgroundTask
+    {
+        private Thread thread;
+
+        protected BackgroundTask()
+        {
+            this.thread = new Thread(DoWork);
+        }
+
+        protected void StartWorkThread() => thread.Start();
+
+        protected abstract void DoWork();
+
+        public bool TryFinish()
+        {
+            if (!thread.IsAlive)
+            {
+                OnWorkComplete();
+                return true;
+            }
+
+            return false;
+        }
+
+        protected abstract void OnWorkComplete();
+    }
+
     class Program
     {
         static ImFontPtr font20;
@@ -503,14 +703,24 @@ namespace RetroRoulette
 
         static GroupNode rootNode;
         public static string gameNameFilter = "";
-
-
         static Node? nodeDraggedProgressBar = null;
+
+        public static List<BackgroundTask> backgroundTasks = new List<BackgroundTask>();
+
+        public static void AddBackgroundTask(BackgroundTask task)
+        { 
+            backgroundTasks.Add(task); 
+        }
 
         static void LoadConfigFromDisk()
         {
-            string jsonSavedConfig = File.ReadAllText("rr_config.txt");
-            SavedConfig? savedConfig = JsonSerializer.Deserialize<SavedConfig>(jsonSavedConfig);
+            SavedConfig? savedConfig = null;
+
+            try
+            {
+                savedConfig = JsonSerializer.Deserialize<SavedConfig>(File.ReadAllText("rr_config.txt"));
+            }
+            catch (FileNotFoundException) { }
 
             if (savedConfig == null)
             {
@@ -577,6 +787,15 @@ namespace RetroRoulette
 
                 RenderUI();
 
+                for (int i = 0; i < backgroundTasks.Count; i++)
+                {
+                    if (backgroundTasks[i].TryFinish())
+                    {
+                        backgroundTasks.RemoveAt(i);
+                        i--;
+                    }
+                }
+
                 cl.Begin();
                 cl.SetFramebuffer(gd.MainSwapchain.Framebuffer);
                 cl.ClearColorTarget(0, new RgbaFloat(1, 1, 1, 1));
@@ -610,6 +829,8 @@ namespace RetroRoulette
             {
                 if (ImGui.BeginTabBar("tabs"))
                 {
+                    ImGui.BeginDisabled(savedconfigRootNodePendingSave != null);
+
                     if (ImGui.BeginTabItem("Browser"))
                     {
                         RenderBrowserTab();
@@ -621,6 +842,8 @@ namespace RetroRoulette
                         RenderSlotMachineTab();
                         ImGui.EndTabItem();
                     }
+
+                    ImGui.EndDisabled();
 
                     if (ImGui.BeginTabItem("Config"))
                     {
@@ -698,9 +921,8 @@ namespace RetroRoulette
 
             if (showGameSelCfgThisFrame)
             {
-                // TODO use a table so that the 2nd child width stays constant on resize
-
-                ImGui.BeginChild("slotmachine", new Vector2(ImGui.GetContentRegionAvail().X / 2, ImGui.GetContentRegionAvail().Y), ImGuiChildFlags.ResizeX);
+                ImGui.BeginTable("slotmachine", 2, ImGuiTableFlags.Resizable | ImGuiTableFlags.BordersInnerV, ImGui.GetContentRegionAvail());
+                ImGui.TableNextColumn();
             }
 
             Vector2 slotMachineTabTopRight = ImGui.GetCursorPos() + new Vector2(ImGui.GetContentRegionAvail().X, 0);
@@ -723,9 +945,7 @@ namespace RetroRoulette
 
             if (showGameSelCfgThisFrame)
             {
-                ImGui.EndChild();
-
-                ImGui.SameLine(0, 0);
+                ImGui.TableNextColumn();
 
                 ImGui.PushStyleColor(ImGuiCol.ChildBg, new Vector4(0.07f, 0.07f, 0.07f, 1.0f));
 
@@ -733,10 +953,11 @@ namespace RetroRoulette
                 {
                     RenderGameSelectionConfig();
                 }
+                ImGui.EndChild();
 
                 ImGui.PopStyleColor();
 
-                ImGui.EndChild();
+                ImGui.EndTable();
             }
         }
 
@@ -869,8 +1090,6 @@ namespace RetroRoulette
                     {
                         if (reel.spinning)
                         {
-                            // TODO don't allow selecting a game that's already been selected in another reel
-
                             reel.Game = rootNode.WeightedFilteredRandomGame();
                         }
                     }
@@ -932,8 +1151,12 @@ namespace RetroRoulette
 
                             ImGui.EndDisabled();
 
+                            ImGui.BeginDisabled(!game.IsPlayable);
+
                             if (ImGui.Button($"Play##{game.ownerNode}+{game.name}"))
                                 game.PlayVariant(reel.variant);
+
+                            ImGui.EndDisabled();
                         }
                     }
                     else
@@ -1016,7 +1239,7 @@ namespace RetroRoulette
 
                         ImGui.TableNextColumn();
 
-                        if (nodeOpen) // TODO maybe hiding was the right thing instead of this?
+                        if (nodeOpen)
                         {
                             ImGui.PushStyleColor(ImGuiCol.PlotHistogram, new Vector4(0.2f, 0.2f, 0.2f, 1.0f));
                             ImGui.PushStyleColor(ImGuiCol.FrameBg, new Vector4(0.1f, 0.1f, 0.1f, 1.0f));
@@ -1057,18 +1280,14 @@ namespace RetroRoulette
             }
         }
 
-        static SavedConfig.GroupNode? savedconfigRootNodePendingSave = null; // TODO disable other tabs if true?
+        static SavedConfig.GroupNode? savedconfigRootNodePendingSave = null;
 
         private static void RenderConfigTab()
         {
-            if (ImGui.BeginTable("nodetree", 4))
+            if (ImGui.BeginTable("nodetree", 3))
             {
                 ImGui.TableSetupColumn("name", ImGuiTableColumnFlags.WidthFixed | ImGuiTableColumnFlags.IndentEnable, 300); // TODO dynamic size
                 ImGui.TableSetupColumn("buttons", ImGuiTableColumnFlags.WidthFixed, 207);
-
-                // TODO combine these
-
-                ImGui.TableSetupColumn("props", ImGuiTableColumnFlags.WidthFixed, 400);
                 ImGui.TableSetupColumn("commands", ImGuiTableColumnFlags.WidthStretch);
 
                 using (StyleContext sctxNodetree = new StyleContext())
@@ -1114,7 +1333,7 @@ namespace RetroRoulette
 
         static Dictionary<string, string[]> pathToFileTypes = new Dictionary<string, string[]>();
 
-        private static IEnumerable<string> GetFileTypesInDir(string dirPath)
+        public static IEnumerable<string> GetFileTypesInDir(string dirPath)
         {
             // TODO periodically refresh
             // TODO catch dir does not exist exception
@@ -1232,7 +1451,7 @@ namespace RetroRoulette
                                 if (ImGui.IsItemClicked())
                                 {
                                     parentNode.ChildNodes.Remove(node);
-                                    groupNodeChild.ChildNodes.Insert(0, node);
+                                    groupNodeChild.ChildNodes.Add(node);
                                     edited = true;
                                 }
                             }
@@ -1303,196 +1522,9 @@ namespace RetroRoulette
             ImGui.TableNextColumn();
 
             {
-                if (node is SavedConfig.FileFolderNode fileFolderNode)
+                if (node is SavedConfig.GamesNode gamesNode)
                 {
-                    ImGui.SetNextItemWidth(-float.Epsilon);
-                    ImGui.InputText("##pathedit", ref fileFolderNode.DirPathEditable, 512);
-
-                    if (ImGui.IsItemEdited())
-                        edited = true;
-
-                    // TODO
-
-                    //if (!Directory.Exists(dirPathEdit))
-                    //{
-                    //    ImGui.Text("oh no!");
-                    //}
-                }
-                else if (node is SavedConfig.NameListNode nameListNode)
-                {
-                    int count = nameListNode.NameList.Length;
-                    if (ImGui.CollapsingHeader($"{count} name{(count == 1 ? "" : "s")}...###stringlistheader"))
-                    {
-                        string namesList = String.Join('\n', nameListNode.NameList);
-
-                        // TODO when user hits ctrl+v, increase string size by size of clipboard
-
-                        ImGui.InputTextMultiline("##names", ref namesList, (uint)namesList.Length + 262144, new Vector2(-float.Epsilon, 200));
-
-                        if (ImGui.IsItemEdited())
-                        {
-                            nameListNode.NameList = namesList.Split('\n').Select(s => s.Trim()).Where(s => !String.IsNullOrEmpty(s)).ToArray();
-                            edited = true;
-                        }
-                    }
-                }
-            }
-
-            ImGui.TableNextColumn();
-
-            {
-                if (node is SavedConfig.NameListNode nameListNode)
-                {
-                    if (ImGui.CollapsingHeader("Play command..."))
-                    {
-                        {
-                            bool isNone = nameListNode.PlayCommand.Length == 0;
-
-                            ImGui.BeginDisabled(isNone);
-                            if (ImGui.Checkbox("##none", ref isNone))
-                            {
-                                nameListNode.PlayCommand = new string[] { };
-                                edited = true;
-                            }
-                            ImGui.EndDisabled();
-
-                            ImGui.SameLine(0, ImGui.GetStyle().ItemInnerSpacing.X);
-                            ImGui.AlignTextToFramePadding();
-                            ImGui.TextUnformatted("None");
-                        }
-
-                        {
-                            bool isProgram = nameListNode.PlayCommand.Length > 0;
-
-                            ImGui.BeginDisabled(isProgram);
-                            if (ImGui.Checkbox("##program", ref isProgram))
-                            {
-                                nameListNode.PlayCommand = new[] { "" };
-                                edited = true;
-                            }
-                            ImGui.EndDisabled();
-
-                            ImGui.SameLine(0, ImGui.GetStyle().ItemInnerSpacing.X);
-                            ImGui.AlignTextToFramePadding();
-                            ImGui.TextUnformatted(isProgram ? "Program: " : "Program");
-
-                            if (isProgram)
-                            {
-                                ImGui.SameLine();
-
-                                string programName = nameListNode.PlayCommand[0];
-                                ImGui.SetNextItemWidth(-float.Epsilon);
-                                ImGui.InputText("##programname", ref programName, 1024);
-
-                                if (ImGui.IsItemEdited())
-                                {
-                                    nameListNode.PlayCommand[0] = programName;
-                                    edited = true;
-                                }
-                            }
-                        }
-                    }
-                }
-                else if (node is SavedConfig.FileFolderNode fileFolderNode)
-                {
-                    if (ImGui.CollapsingHeader("Play command..."))
-                    {
-                        {
-                            bool isNone = fileFolderNode.PlayCommand.Count == 0;
-
-                            ImGui.BeginDisabled(isNone);
-                            if (ImGui.Checkbox("##none", ref isNone))
-                            {
-                                fileFolderNode.PlayCommand.Clear();;
-                                edited = true;
-                            }
-                            ImGui.EndDisabled();
-
-                            ImGui.SameLine(0, ImGui.GetStyle().ItemInnerSpacing.X);
-                            ImGui.AlignTextToFramePadding();
-                            ImGui.TextUnformatted("None");
-                        }
-
-                        {
-                            bool isProgram = fileFolderNode.PlayCommand.Count > 0;
-
-                            ImGui.BeginDisabled(isProgram);
-                            if (ImGui.Checkbox("##program", ref isProgram))
-                            {
-                                fileFolderNode.PlayCommand = new List<string> { "" };
-                                edited = true;
-                            }
-                            ImGui.EndDisabled();
-
-                            ImGui.SameLine(0, ImGui.GetStyle().ItemInnerSpacing.X);
-                            ImGui.AlignTextToFramePadding();
-                            ImGui.TextUnformatted(isProgram ? "Program: " : "Program");
-
-                            if (isProgram)
-                            {
-                                for (int i = 0; i < fileFolderNode.PlayCommand.Count; i++)
-                                {
-                                    ImGui.SameLine();
-
-                                    string cmdComponent = fileFolderNode.PlayCommand[i];
-
-                                    ImGui.SetNextItemWidth(Math.Max(20, ImGui.CalcTextSize(cmdComponent).X + ImGui.GetStyle().FramePadding.X * 2));
-                                    ImGui.InputText($"##programname-{i}", ref cmdComponent, 1024, ImGuiInputTextFlags.NoHorizontalScroll);
-
-                                    if (ImGui.IsItemEdited())
-                                    {
-                                        fileFolderNode.PlayCommand[i] = cmdComponent;
-                                        edited = true;
-                                    }
-                                }
-
-                                ImGui.SameLine();
-
-                                ImGui.AlignTextToFramePadding();
-                                ImGui.TextUnformatted("<path to file>");
-
-                                ImGui.SameLine();
-
-                                ImGui.BeginDisabled(fileFolderNode.PlayCommand.Count == 1);
-                                if (ImGui.Button("-"))
-                                {
-                                    fileFolderNode.PlayCommand.RemoveAt(fileFolderNode.PlayCommand.Count - 1);
-                                    edited = true;
-                                }
-                                ImGui.EndDisabled();
-
-                                ImGui.SameLine();
-
-                                if (ImGui.Button("+"))
-                                {
-                                    fileFolderNode.PlayCommand.Add("");
-                                    edited = true;
-                                }
-                            }
-                        }
-
-                        ImGui.Separator();
-
-                        ImGui.TextUnformatted("Filetypes supported:");
-
-                        foreach (string fileType in GetFileTypesInDir(fileFolderNode.DirPath))
-                        {
-                            bool included = fileFolderNode.SupportedExtensions.Contains(fileType);
-
-                            if (ImGui.Checkbox(fileType, ref included))
-                            {
-                                if (included)
-                                {
-                                    fileFolderNode.SupportedExtensions.Add(fileType);
-                                }
-                                else
-                                {
-                                    fileFolderNode.SupportedExtensions.Remove(fileType);
-                                }
-                                edited = true;
-                            }
-                        }
-                    }
+                    gamesNode.RenderConfigEditor(ref edited);
                 }
             }
 
@@ -1538,69 +1570,6 @@ namespace RetroRoulette
                     }
                 }
             }
-        }
-    }
-
-    class StyleContext : IDisposable
-    {
-        private int numStyleColorsPushed = 0;
-        private int numStyleVarsPushed = 0;
-        private bool pushedFont = false;
-        private bool beganDisabled = false;
-
-        public void SetDisabled(bool disabled)
-        {
-            Debug.Assert(!beganDisabled);
-
-            ImGui.BeginDisabled(disabled);
-            beganDisabled = true;
-        }
-
-        public void SetStyleColor(ImGuiCol idx, uint col)
-        {
-            ImGui.PushStyleColor(idx, col);
-            numStyleColorsPushed++;
-        }
-
-        public void SetStyleColor(ImGuiCol idx, Vector4 col)
-        {
-            ImGui.PushStyleColor(idx, col);
-            numStyleColorsPushed++;
-        }
-
-        public void SetStyleVar(ImGuiStyleVar idx, float val)
-        {
-            ImGui.PushStyleVar(idx, val);
-            numStyleVarsPushed++;
-        }
-
-        public void SetStyleVar(ImGuiStyleVar idx, Vector2 val)
-        {
-            ImGui.PushStyleVar(idx, val);
-            numStyleVarsPushed++;
-        }
-
-        public void SetFont(ImFontPtr font)
-        {
-            Debug.Assert(!pushedFont);
-
-            ImGui.PushFont(font);
-            pushedFont = true;
-        }
-
-        public void Dispose()
-        {
-            if (numStyleColorsPushed > 0)
-                ImGui.PopStyleColor(numStyleColorsPushed);
-
-            if (numStyleVarsPushed > 0)
-                ImGui.PopStyleVar(numStyleVarsPushed);
-
-            if (pushedFont)
-                ImGui.PopFont();
-
-            if (beganDisabled)
-                ImGui.EndDisabled();
         }
     }
 }
