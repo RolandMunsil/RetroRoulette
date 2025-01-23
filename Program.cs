@@ -2,6 +2,7 @@
 using SharpGen.Runtime.Win32;
 using System;
 using System.Collections.Generic;
+using System.Collections.Immutable;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
@@ -13,6 +14,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 using System.Threading;
+using System.Xml;
 using System.Xml.Linq;
 using Veldrid;
 using Veldrid.MetalBindings;
@@ -45,6 +47,7 @@ namespace RetroRoulette
         [JsonDerivedType(typeof(FileFolderNode), "FileFolder")]
         [JsonDerivedType(typeof(GroupNode), "Group")]
         [JsonDerivedType(typeof(NameListNode), "NameList")]
+        [JsonDerivedType(typeof(MAMENode), "MAME")]
         public class Node 
         {
             public int id = 0;
@@ -96,9 +99,9 @@ namespace RetroRoulette
 
                 ImGui.SameLine();
 
-                ImGui.SetNextItemWidth(150);
+                ImGui.SetNextItemWidth(120);
 
-                if (ImGui.BeginCombo("##extensions", (SupportedExtensions.Count == 0) ? "(no filetypes selected)" : String.Join(", ", SupportedExtensions)))
+                if (ImGui.BeginCombo("##extensions", (SupportedExtensions.Count == 0) ? "(no filetypes selected)" : String.Join(", ", SupportedExtensions), ImGuiComboFlags.NoArrowButton))
                 {
                     foreach (string fileType in Program.GetFileTypesInDir(DirPath))
                     {
@@ -123,8 +126,12 @@ namespace RetroRoulette
 
                 ImGui.SameLine();
 
-                ImGui.SetNextItemWidth(150);
-                if (ImGui.BeginCombo("##action", (PlayCommand.Count == 0) ? "(no play action)" : "Launch Program:"))
+                ImGui.TextUnformatted("->");
+
+                ImGui.SameLine();
+
+                ImGui.SetNextItemWidth(120);
+                if (ImGui.BeginCombo("##action", (PlayCommand.Count == 0) ? "(no play action)" : "Launch Program:", ImGuiComboFlags.NoArrowButton))
                 {
                     if (ImGui.Selectable("None"))
                     {
@@ -187,6 +194,21 @@ namespace RetroRoulette
             }
         }
 
+        public class MAMENode : GamesNode
+        {
+            private string exePath = "";
+            public string ExePath { get => exePath; set => exePath = value; }
+
+            public override void RenderConfigEditor(ref bool edited)
+            {
+                ImGui.SetNextItemWidth(400);
+                ImGui.InputText("##pathedit", ref exePath, 512);
+
+                if (ImGui.IsItemEdited())
+                    edited = true;
+            }
+        }
+
         public class NameListNode : GamesNode
         {
             public List<string> NameList { get; set; } = new List<string>();
@@ -214,8 +236,12 @@ namespace RetroRoulette
 
                 ImGui.SameLine();
 
-                ImGui.SetNextItemWidth(150);
-                if (ImGui.BeginCombo("##action", (PlayCommand.Count == 0) ? "(no play action)" : "Launch Program:"))
+                ImGui.TextUnformatted("->");
+
+                ImGui.SameLine();
+
+                ImGui.SetNextItemWidth(120);
+                if (ImGui.BeginCombo("##action", (PlayCommand.Count == 0) ? "(no play action)" : "Launch Program:", ImGuiComboFlags.NoArrowButton))
                 {
                     if (ImGui.Selectable("None"))
                     {
@@ -464,6 +490,280 @@ namespace RetroRoulette
         }
     }
 
+    class MAMESystemInfo
+    {
+        public string ShortName { get; set; }
+        public string? CloneOf { get; set; }
+        public string Name { get; set; }
+        public string NameCore { get; set; }
+        public string NameVariantInfo { get; set; }
+        public string Year { get; set; }
+        private int normalizedYear;
+        public int NormalizedYear { get => normalizedYear; set => normalizedYear = value; }
+        public int Players { get; set; }
+        public string PlayerOneControlType { get; set; }
+        public int PlayerOneButtonCount { get; set; }
+        public string DriverStatus { get; set; }
+        public bool HasDisplay { get; set; }
+        public bool HasSoftwareList { get; set; }
+
+        public MAMESystemInfo(XmlNode machineNode)
+        {
+            if (machineNode == null)
+            {
+                throw new ArgumentNullException(nameof(machineNode));
+            }
+
+            ShortName = machineNode.Attributes["name"].Value;
+            CloneOf = machineNode.Attributes["cloneof"]?.Value;
+
+            Name = machineNode["description"].InnerText;
+            int parenIndex = Name.IndexOf('(');
+            NameCore = parenIndex >= 0 ? Name.Substring(0, parenIndex - 1) : Name;
+            NameVariantInfo = parenIndex >= 0 ? Name.Substring(parenIndex) : "";
+
+            Year = machineNode["year"].InnerText;
+
+            if (!int.TryParse(Year, out normalizedYear))
+            {
+                if (Year == "19??")
+                {
+                    normalizedYear = 1980; // Lean early since unknown
+                }
+                else if (Year == "20??")
+                {
+                    normalizedYear = 2000; // Lean early since unknown
+                }
+                else if (Year == "????")
+                {
+                    normalizedYear = 1980; // Lean early since unknown
+                }
+                else if (Year[3] == '?')
+                {
+                    normalizedYear = int.Parse(Year.Substring(0, 3) + "5");
+                }
+                else if (Year.Length == 5 && Year.EndsWith("?"))
+                {
+                    normalizedYear = int.Parse(Year.Substring(0, 4));
+                }
+            }
+
+            Players = int.Parse(machineNode["input"].Attributes["players"].Value);
+
+            if (machineNode["input"].HasChildNodes)
+            {
+                XmlNode firstPlayerNode = machineNode["input"].FirstChild;
+                PlayerOneControlType = firstPlayerNode.Attributes["type"].Value;
+                PlayerOneButtonCount = (firstPlayerNode.Attributes["buttons"] != null) ? int.Parse(firstPlayerNode.Attributes["buttons"].Value) : 0;
+            }
+            else
+            {
+                PlayerOneControlType = "";
+                PlayerOneButtonCount = 0;
+            }
+
+            DriverStatus = machineNode["driver"].Attributes["status"].Value;
+            HasDisplay = machineNode.SelectSingleNode("display") != null;
+            HasSoftwareList = machineNode.SelectSingleNode("softwarelist") != null;
+
+            // Note: I'm not sure if "slot" and "device" info is super usable. It's unclear exactly what it means
+            //  and it's hard to come up with a clear heuristic that distinguishes games that should be included from
+            //  games that shouldn't
+        }
+    }
+
+    class MAMESystemGroup : Game
+    {
+        private readonly string defaultVariant;
+        private readonly List<MAMESystemInfo> systems;
+
+        public MAMESystemGroup(string name, string parentShortName, IEnumerable<MAMESystemInfo> systems, Node ownerNode) 
+            : base(name, ownerNode)
+        {
+            this.systems = systems.ToList();
+            this.defaultVariant = this.systems.FirstOrDefault(s => s.ShortName == parentShortName, this.systems[0]).NameVariantInfo;
+        }
+
+        public override bool IsPlayable => true;
+        public override IEnumerable<string> Variants() => systems.Select(s => s.NameVariantInfo);
+        public override string DefaultVariant() => defaultVariant;
+
+        public override void PlayVariant(string variant)
+        {
+            string shortName = systems.Single(s => s.NameVariantInfo == variant).ShortName;
+
+            Process p = new Process();
+
+            p.StartInfo.FileName = (ownerNode as MAMENode).exePath;
+            p.StartInfo.ArgumentList.Add(shortName);
+
+            // MAME looks for paths on the working directory (annoying)
+            p.StartInfo.WorkingDirectory = Path.GetDirectoryName(p.StartInfo.FileName);
+            p.Start();
+        }
+    }
+
+    class MAMENode : GamesNode
+    {
+        public readonly string exePath;
+        private List<MAMESystemGroup> games;
+
+        public override IEnumerable<Game> Games => games;
+
+        public MAMENode(SavedConfig.MAMENode mameNode)
+            : base(mameNode)
+        {
+            // How to combine variants of games without ignoring interesting bootlegs? maybe base it on manufacturer?
+
+            // TODO refresh this when we refresh the list of games
+
+            // TODO filtering/weighting for this node?
+
+            this.exePath = mameNode.ExePath;
+            this.games = new List<MAMESystemGroup>();
+            Program.AddBackgroundTask(new MAMESystemsBgTask(this));
+        }
+
+        class MAMESystemsBgTask : BackgroundTask
+        {
+            private MAMENode mameNode;
+            private string exePath;
+            private List<MAMESystemGroup> games = new List<MAMESystemGroup>();
+
+            public MAMESystemsBgTask(MAMENode mameNode)
+            {
+                this.mameNode = mameNode;
+                this.exePath = mameNode.exePath;
+                StartWorkThread();
+            }
+
+            protected override void DoWork()
+            {
+                string verifyromsOutput;
+
+                if (File.Exists("verifyroms.txt"))
+                {
+                    verifyromsOutput = File.ReadAllText("verifyroms.txt");
+                }
+                else
+                {
+                    using (Process pVerifyroms = new Process())
+                    {
+                        pVerifyroms.StartInfo.FileName = exePath;
+                        pVerifyroms.StartInfo.ArgumentList.Add("-verifyroms");
+                        pVerifyroms.StartInfo.WorkingDirectory = Path.GetDirectoryName(exePath);
+                        pVerifyroms.StartInfo.CreateNoWindow = true;
+                        pVerifyroms.StartInfo.UseShellExecute = false;
+                        pVerifyroms.StartInfo.RedirectStandardOutput = true;
+
+                        pVerifyroms.Start();
+                        verifyromsOutput = pVerifyroms.StandardOutput.ReadToEnd();
+                        pVerifyroms.WaitForExit();
+                    }
+
+                    File.WriteAllText("verifyroms.txt", verifyromsOutput);
+                }
+
+                ImmutableHashSet<string> playableSets = verifyromsOutput
+                    .Split(new string[] { "\r\n", "\n", "\r" }, StringSplitOptions.None)
+                    .Select(line => line.Trim())
+                    .Where(line => line.StartsWith("romset ") && line.EndsWith(" is good")) // TODO should we ever include "is best available"? distinguish between needs redump and missing rom?
+                    .Select(line => line.Split())
+                    .Where(words => words.Length >= 2)
+                    .Select(words => words[1])
+                    .ToImmutableHashSet();
+
+                XmlDocument xmldoc = new XmlDocument();
+
+                if (File.Exists("listxml.txt"))
+                {
+                    xmldoc.Load("listxml.txt");
+                }
+                else
+                {
+                    using (Process pListxml = new Process())
+                    {
+                        pListxml.StartInfo.FileName = exePath;
+                        pListxml.StartInfo.ArgumentList.Add("-listxml");
+                        pListxml.StartInfo.WorkingDirectory = Path.GetDirectoryName(exePath);
+                        pListxml.StartInfo.CreateNoWindow = true;
+                        pListxml.StartInfo.UseShellExecute = false;
+                        pListxml.StartInfo.RedirectStandardOutput = true;
+
+                        pListxml.Start();
+
+                        string xml = pListxml.StandardOutput.ReadToEnd();
+                        File.WriteAllText("listxml.txt", xml);
+                        xmldoc.LoadXml(xml);
+
+                        pListxml.WaitForExit();
+                    }
+                }
+
+                XmlNode mameXmlNode = xmldoc.GetElementsByTagName("mame")[0];
+
+                List<MAMESystemInfo> systems = new List<MAMESystemInfo>();
+
+                foreach (XmlNode machineNode in mameXmlNode.ChildNodes)
+                {
+                    // Ignore anything the user doesn't have the ROMs for.
+
+                    string? name = machineNode.Attributes?["name"]?.Value;
+
+                    if (name == null || !playableSets.Contains(name))
+                        continue;
+
+                    // Ignore anything that can't run. Pretty straightforward.
+                    // Note: "isdevice" seems to imply runnable="no" so this de facto excludes all devices
+
+                    if (machineNode.Attributes?["runnable"]?.Value == "no")
+                        continue;
+
+                    // Ignore any drivers which aren't working
+
+                    if (machineNode["driver"]?.Attributes?["status"]?.Value == "preliminary")
+                        continue;
+
+                    // After the above filters, there are only like two 0-player games - ignore em!
+
+                    if (machineNode["input"]?.Attributes?["players"]?.Value == "0")
+                        continue;
+
+                    // BIOSes are not super exciting and there are also very few of them
+
+                    if (machineNode.Attributes?["isbios"]?.Value == "yes")
+                        continue;
+
+                    systems.Add(new MAMESystemInfo(machineNode));
+                }
+
+                games = systems.GroupBy(s => (ParentName: s.CloneOf ?? s.ShortName, s.NameCore)).Select(grp => new MAMESystemGroup(grp.Key.NameCore, grp.Key.ParentName, grp, mameNode)).ToList();
+            }
+
+            protected override void OnWorkComplete()
+            {
+                mameNode.games = this.games;
+
+                if (mameNode.Weight == 0)
+                {
+                    mameNode.Weight = games.Count;
+                }
+            }
+        }
+
+        public override SavedConfig.Node ToSavedConfigNode()
+        {
+            return new SavedConfig.MAMENode()
+            {
+                id = id,
+                Name = name,
+                Enabled = Enabled,
+                Weight = Weight,
+                ExePath = exePath,
+            };
+        }
+    }
+
     class FileFolderNode : GamesNode
     {
         private readonly string dirPath;
@@ -474,6 +774,17 @@ namespace RetroRoulette
         private List<ROMSet> romsets;
 
         public override IEnumerable<Game> Games => romsets;
+
+        public FileFolderNode(SavedConfig.FileFolderNode savedConfigFileFolderNode)
+            : base(savedConfigFileFolderNode)
+        {
+            dirPath = savedConfigFileFolderNode.DirPath;
+            playCommand = new List<string>(savedConfigFileFolderNode.PlayCommand);
+            supportedExtensions = new List<string>(savedConfigFileFolderNode.SupportedExtensions);
+
+            romsets = new List<ROMSet>();
+            Program.AddBackgroundTask(new RomsetsBgTask(this));
+        }
 
         class RomsetsBgTask : BackgroundTask
         {
@@ -510,17 +821,6 @@ namespace RetroRoulette
                     fileFolderNode.Weight = romsets.Count;
                 }
             }
-        }
-
-        public FileFolderNode(SavedConfig.FileFolderNode savedConfigFileFolderNode)
-            : base(savedConfigFileFolderNode)
-        {
-            dirPath = savedConfigFileFolderNode.DirPath;
-            playCommand = new List<string>(savedConfigFileFolderNode.PlayCommand);
-            supportedExtensions = new List<string>(savedConfigFileFolderNode.SupportedExtensions);
-
-            romsets = new List<ROMSet>();
-            Program.AddBackgroundTask(new RomsetsBgTask(this));
         }
 
         public override SavedConfig.Node ToSavedConfigNode()
@@ -580,6 +880,10 @@ namespace RetroRoulette
                 else if (childNode is SavedConfig.NameListNode childNameListNode)
                 {
                     subNodes.Add(new NameListNode(childNameListNode));
+                }
+                else if (childNode is SavedConfig.MAMENode childMameNode)
+                {
+                    subNodes.Add(new MAMENode(childMameNode));
                 }
             }
         }
@@ -658,8 +962,10 @@ namespace RetroRoulette
 
     abstract class BackgroundTask
     {
-        private Thread thread;
+        private readonly Thread thread;
 
+        public bool IsRunning => thread.IsAlive;
+        
         protected BackgroundTask()
         {
             this.thread = new Thread(DoWork);
@@ -1511,6 +1817,12 @@ namespace RetroRoulette
                         if (ImGui.Selectable("Name List"))
                         {
                             groupNode.ChildNodes.Add(new SavedConfig.NameListNode() { id = MaxId(rootNode) + 1 });
+                            edited = true;
+                        }
+
+                        if (ImGui.Selectable("MAME"))
+                        {
+                            groupNode.ChildNodes.Add(new SavedConfig.MAMENode() { id = MaxId(rootNode) + 1 });
                             edited = true;
                         }
 
