@@ -7,20 +7,20 @@ using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 using System.Xml.Linq;
-using static RetroRoulette.AppState;
+using static RetroRoulette.AppConfig;
 
 namespace RetroRoulette
 {
-    public class FileFolderNodeState : GamesNodeState
+    public class FileFolderNodeConfig : GamesNodeConfig
     {
         private string dirPath = "";
         public string DirPath { get => dirPath; set => dirPath = value; }
         public List<string> PlayCommand { get; set; } = new List<string>();
         public List<string> SupportedExtensions { get; set; } = new List<string>();
 
-        public override NodeState Clone()
+        public override NodeConfig Clone()
         {
-            return new FileFolderNodeState
+            return new FileFolderNodeConfig
             {
                 id = this.id,
                 Name = this.Name,
@@ -146,12 +146,12 @@ namespace RetroRoulette
 
     class FileFolderNode : GamesNode
     {
-        public FileFolderNodeState State => (this.GamesNodeState as FileFolderNodeState)!;
+        public FileFolderNodeConfig Config => (this.GamesNodeConfig as FileFolderNodeConfig)!;
 
         private List<ROMSet> romsets;
         public override IEnumerable<Game> Games => romsets;
 
-        public FileFolderNode(FileFolderNodeState savedConfigFileFolderNode)
+        public FileFolderNode(FileFolderNodeConfig savedConfigFileFolderNode)
             : base(savedConfigFileFolderNode)
         {
             romsets = new List<ROMSet>();
@@ -172,10 +172,10 @@ namespace RetroRoulette
 
             protected override void DoWork()
             {
-                if (Directory.Exists(fileFolderNode.State.DirPath))
+                if (Directory.Exists(fileFolderNode.Config.DirPath))
                 {
-                    romsets = Directory.EnumerateFiles(fileFolderNode.State.DirPath, "*", SearchOption.AllDirectories)
-                    .Where(filePath => fileFolderNode.State.SupportedExtensions.Contains(Path.GetExtension(filePath)))
+                    romsets = Directory.EnumerateFiles(fileFolderNode.Config.DirPath, "*", SearchOption.AllDirectories)
+                    .Where(filePath => fileFolderNode.Config.SupportedExtensions.Contains(Path.GetExtension(filePath)))
                     .Where(filePath => !ROMNameParser.IsBios(filePath)) // TODO
                     .Select(filePath => new ROM(filePath))
                     .GroupBy(rom => rom.details.name)
@@ -220,12 +220,12 @@ namespace RetroRoulette
 
         public override IEnumerable<string> Variants() => roms.Select(rom => rom.details.PropsString());
         public override string DefaultVariant() => DefaultROM().details.PropsString();
-        public override bool IsPlayable => (ownerNode as FileFolderNode).State.PlayCommand.Count() > 0;
+        public override bool IsPlayable => (ownerNode as FileFolderNode).Config.PlayCommand.Count() > 0;
         public override void PlayVariant(string variant)
         {
             ROM rom = roms.First(rom => rom.details.PropsString() == variant);
 
-            string[] command = (ownerNode as FileFolderNode).State.PlayCommand.Append(rom.path).ToArray();
+            string[] command = (ownerNode as FileFolderNode).Config.PlayCommand.Append(rom.path).ToArray();
 
             Process p = new Process();
 

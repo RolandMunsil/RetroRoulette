@@ -22,7 +22,7 @@ using Veldrid.MetalBindings;
 using Veldrid.Sdl2;
 using Veldrid.StartupUtilities;
 using Vulkan.Xlib;
-using static RetroRoulette.AppState;
+using static RetroRoulette.AppConfig;
 
 // Ideas for stuff to add support for:
 //  - MAME arcade games
@@ -42,14 +42,24 @@ using static RetroRoulette.AppState;
 
 namespace RetroRoulette
 {
-    [JsonPolymorphic(TypeDiscriminatorPropertyName = "Type")]
-    [JsonDerivedType(typeof(FileFolderNodeState), "FileFolder")]
-    [JsonDerivedType(typeof(GroupNodeState), "Group")]
-    [JsonDerivedType(typeof(NameListNodeState), "NameList")]
-    [JsonDerivedType(typeof(MAMENodeState), "MAME")]
-    public abstract class NodeState
+    // Anything with "state" at the end is state that will be saved to disk and loaded on start
+
+    public class AppConfig
     {
-        public int id = 0;
+        public GroupNodeConfig RootNode { get; set; } = new GroupNodeConfig();
+        public SharedMAMEState SharedMameState { get; set; } = new SharedMAMEState();
+    }
+
+    [JsonPolymorphic(TypeDiscriminatorPropertyName = "Type")]
+    [JsonDerivedType(typeof(FileFolderNodeConfig), "FileFolder")]
+    [JsonDerivedType(typeof(GroupNodeConfig), "Group")]
+    [JsonDerivedType(typeof(NameListNodeConfig), "NameList")]
+    [JsonDerivedType(typeof(MAMENodeConfig), "MAME")]
+    public abstract class NodeConfig
+    {
+        private static int nextId = 1;
+
+        public int id = nextId++; // TODO if config tab is open, this can eventually wrap around and cause collisions
         private string name = "";
 
         [JsonPropertyOrder(-2)]
@@ -58,71 +68,16 @@ namespace RetroRoulette
         [JsonIgnore]
         public ref string NameEditable => ref name;
 
-        public abstract NodeState Clone();
-    }
-
-    public abstract class GamesNodeState : NodeState
-    {
-        [JsonPropertyOrder(-1)]
-        public bool Enabled { get; set; } = true;
-        [JsonPropertyOrder(-1)]
-        public double Weight { get; set; } = 0;
-
-        public abstract void RenderConfigEditor(ref bool edited);
-    }
-
-    public class GroupNodeState : NodeState
-    {
-        public List<NodeState> ChildNodes { get; set; } = new List<NodeState>();
-
-        public override NodeState Clone()
-        {
-            return new GroupNodeState 
-            {
-                id = this.id,
-                Name = this.Name,
-                ChildNodes = ChildNodes.Select(c => c.Clone()).ToList(),
-            };
-        }
-    }
-
-    // Anything with "state" at the end is state that will be saved to disk and loaded on start
-
-    public class AppState
-    {
-        public GroupNodeState RootNode { get; set; } = new GroupNodeState();
-        public SharedMAMEState SharedMameState { get; set; } = new SharedMAMEState();
-
-        /////////////////////////////////////////////////////////////////////////
-
-        public void InitIds()
-        {
-            int nextId = 1;
-            InitIdsInternal(RootNode, ref nextId);
-        }
-
-        private static void InitIdsInternal(NodeState node, ref int nextId)
-        {
-            Debug.Assert(node.id == 0);
-            node.id = nextId++;
-
-            if (node is GroupNodeState groupNode)
-            {
-                foreach (NodeState childNode in groupNode.ChildNodes)
-                {
-                    InitIdsInternal(childNode, ref nextId);
-                }
-            }
-        }
+        public abstract NodeConfig Clone();
     }
 
     abstract class Node
     {
-        public NodeState NodeState { get; set; }
+        public NodeConfig NodeConfig { get; set; }
 
-        public Node(NodeState nodeState)
+        public Node(NodeConfig nodeState)
         {
-            this.NodeState = nodeState;
+            this.NodeConfig = nodeState;
         }
 
         public abstract bool Enabled { get; set; }
@@ -133,6 +88,35 @@ namespace RetroRoulette
         public IEnumerable<Game> FilteredGames => Games.Where(game => game.MatchesNameFilter(Program.gameNameFilter));
         public IEnumerable<Game> FilteredEnabledGames => Games.Where(game => game.ownerNode.Enabled && game.MatchesNameFilter(Program.gameNameFilter));
         public bool AnyGamesMatchFilter => Games.Any(game => game.MatchesNameFilter(Program.gameNameFilter));
+    }
+
+    public abstract class GamesNodeConfig : NodeConfig
+    {
+        [JsonPropertyOrder(-1)]
+        public bool Enabled { get; set; } = true;
+        [JsonPropertyOrder(-1)]
+        public double Weight { get; set; } = 0;
+
+        public abstract void RenderConfigEditor(ref bool edited);
+    }
+
+    abstract class GamesNode : Node
+    {
+        public GamesNodeConfig GamesNodeConfig => (this.NodeConfig as GamesNodeConfig)!;
+
+        public override bool Enabled { get => GamesNodeConfig.Enabled; set => GamesNodeConfig.Enabled = value; }
+        public override double Weight { get => GamesNodeConfig.Weight; set => GamesNodeConfig.Weight = value; }
+        public override double EffectiveWeight => (Enabled && AnyGamesMatchFilter) ? Weight : 0;
+
+        public GamesNode(GamesNodeConfig savedConfigGamesNode)
+            : base(savedConfigGamesNode)
+        {
+        }
+
+        public void ResetWeight()
+        {
+            Weight = Games.Count();
+        }
     }
 
     abstract class Game
@@ -159,28 +143,40 @@ namespace RetroRoulette
         }
     }
 
-    abstract class GamesNode : Node
+    public class GroupNodeConfig : NodeConfig
     {
-        public GamesNodeState GamesNodeState => (this.NodeState as GamesNodeState)!;
+        public List<NodeConfig> ChildNodes { get; set; } = new List<NodeConfig>();
 
-        public override bool Enabled { get => GamesNodeState.Enabled; set => GamesNodeState.Enabled = value; }
-        public override double Weight { get => GamesNodeState.Weight; set => GamesNodeState.Weight = value; }
-        public override double EffectiveWeight => (Enabled && AnyGamesMatchFilter) ? Weight : 0;
-
-        public GamesNode(GamesNodeState savedConfigGamesNode)
-            : base(savedConfigGamesNode)
+        public override NodeConfig Clone()
         {
+            return new GroupNodeConfig
+            {
+                id = this.id,
+                Name = this.Name,
+                ChildNodes = ChildNodes.Select(c => c.Clone()).ToList(),
+            };
         }
 
-        public void ResetWeight()
+        public IEnumerable<NodeConfig> AllSubNodes()
         {
-            Weight = Games.Count();
+            foreach (NodeConfig childNode in ChildNodes)
+            {
+                yield return childNode;
+
+                if (childNode is GroupNodeConfig groupChildNode)
+                {
+                    foreach (NodeConfig subNodeChild in groupChildNode.AllSubNodes())
+                    {
+                        yield return subNodeChild;
+                    }
+                }
+            }
         }
     }
 
     class GroupNode : Node
     {
-        public GroupNodeState GroupNodeState => (this.NodeState as GroupNodeState)!;
+        public GroupNodeConfig GroupNodeConfig => (this.NodeConfig as GroupNodeConfig)!;
 
         public List<Node> subNodes;
 
@@ -204,26 +200,26 @@ namespace RetroRoulette
 
         public override IEnumerable<Game> Games => subNodes.SelectMany(subNode => subNode.Games);
 
-        public GroupNode(GroupNodeState savedConfigGroupNode)
+        public GroupNode(GroupNodeConfig savedConfigGroupNode)
             : base(savedConfigGroupNode)
         {
             subNodes = new List<Node>();
 
-            foreach (NodeState childNode in savedConfigGroupNode.ChildNodes)
+            foreach (NodeConfig childNode in savedConfigGroupNode.ChildNodes)
             {
-                if (childNode is GroupNodeState childGroupNode)
+                if (childNode is GroupNodeConfig childGroupNode)
                 {
                     subNodes.Add(new GroupNode(childGroupNode));
                 }
-                else if (childNode is FileFolderNodeState childFileFolderNode)
+                else if (childNode is FileFolderNodeConfig childFileFolderNode)
                 {
                     subNodes.Add(new FileFolderNode(childFileFolderNode));
                 }
-                else if (childNode is NameListNodeState childNameListNode)
+                else if (childNode is NameListNodeConfig childNameListNode)
                 {
                     subNodes.Add(new NameListNode(childNameListNode));
                 }
-                else if (childNode is MAMENodeState childMameNode)
+                else if (childNode is MAMENodeConfig childMameNode)
                 {
                     subNodes.Add(new MAMENode(childMameNode));
                 }
@@ -292,15 +288,19 @@ namespace RetroRoulette
         }
     }
 
+    // TODO: I think I'm probably making this way overcomplicated somehow
+
     abstract class BackgroundTask
     {
         private readonly Thread thread;
+        protected CancellationTokenSource cts = new CancellationTokenSource();
 
         public bool IsRunning => thread.IsAlive;
         
         protected BackgroundTask()
         {
             this.thread = new Thread(DoWork);
+            this.cts = new CancellationTokenSource();
         }
 
         protected void StartWorkThread() => thread.Start();
@@ -317,6 +317,8 @@ namespace RetroRoulette
 
             return false;
         }
+
+        public void Abort() => cts.Cancel();
 
         protected abstract void OnWorkComplete();
     }
@@ -339,7 +341,7 @@ namespace RetroRoulette
 
         // Config
 
-        public static AppState appState = new AppState();
+        public static AppConfig config = new AppConfig();
         static GroupNode rootNode; // TODO
         public static string gameNameFilter = "";
         static Node? nodeDraggedProgressBar = null;
@@ -355,20 +357,20 @@ namespace RetroRoulette
         {
             try
             {
-                appState = JsonSerializer.Deserialize<AppState>(File.ReadAllText("rr_config.txt"));
-                appState.InitIds(); // TODO
+                config = JsonSerializer.Deserialize<AppConfig>(File.ReadAllText("rr_config.txt"));
+                // config.InitIds(); // TODO
             }
             catch (FileNotFoundException) 
             {
-                appState = new AppState();
+                config = new AppConfig();
             }
 
-            rootNode = new GroupNode(appState.RootNode);
+            rootNode = new GroupNode(config.RootNode);
         }
 
-        static void SaveConfigToDisk()
+        public static void SaveConfigToDisk()
         {
-            string jsonSavedConfig = JsonSerializer.Serialize(appState, new JsonSerializerOptions() { WriteIndented = true });
+            string jsonSavedConfig = JsonSerializer.Serialize(config, new JsonSerializerOptions() { WriteIndented = true });
             File.WriteAllText("rr_config.txt", jsonSavedConfig);
         }
 
@@ -390,8 +392,7 @@ namespace RetroRoulette
             ImGui.CreateContext();
             ImGuiIOPtr io = ImGui.GetIO();
             io.BackendFlags |= ImGuiBackendFlags.RendererHasVtxOffset;
-            io.ConfigFlags |= ImGuiConfigFlags.NavEnableKeyboard |
-                ImGuiConfigFlags.DockingEnable;
+            io.ConfigFlags |= ImGuiConfigFlags.NavEnableKeyboard | ImGuiConfigFlags.DockingEnable;
             io.Fonts.Flags |= ImFontAtlasFlags.NoBakedLines;
 
             font20 = io.Fonts.AddFontFromFileTTF(@"C:\Windows\Fonts\segoeui.ttf", 20);
@@ -412,7 +413,7 @@ namespace RetroRoulette
             // Main application loop
             while (window.Exists)
             {
-                float deltaTime = (float) dtStopwatch.Elapsed.TotalSeconds;
+                float deltaTime = (float)dtStopwatch.Elapsed.TotalSeconds;
                 dtStopwatch.Restart();
                 InputSnapshot snapshot = window.PumpEvents();
                 if (!window.Exists) { break; }
@@ -439,6 +440,11 @@ namespace RetroRoulette
             }
 
             SaveConfigToDisk();
+
+            foreach (BackgroundTask bgTask in backgroundTasks)
+            {
+                bgTask.Abort();
+            }
 
             // Clean up Veldrid resources
             gd.WaitForIdle();
@@ -530,7 +536,7 @@ namespace RetroRoulette
 
                         ImGui.TableNextColumn();
 
-                        ImGui.TextUnformatted(game.ownerNode.NodeState.Name);
+                        ImGui.TextUnformatted(game.ownerNode.NodeConfig.Name);
 
                         ImGui.TableNextColumn();
 
@@ -539,7 +545,7 @@ namespace RetroRoulette
                         ImGui.TableNextColumn();
 
                         bool selected = false;
-                        if (ImGui.Selectable($"{variant}##{game.name}/{game.ownerNode.NodeState.Name}", ref selected, ImGuiSelectableFlags.SpanAllColumns))
+                        if (ImGui.Selectable($"{variant}##{game.name}/{game.ownerNode.NodeConfig.Name}", ref selected, ImGuiSelectableFlags.SpanAllColumns))
                             game.PlayVariant(variant);
                     }
                 }
@@ -755,7 +761,7 @@ namespace RetroRoulette
                             ImGui.TextWrapped(game.name);
                         }
                         ImGui.PopFont();
-                        ImGui.Text(game.ownerNode.NodeState.Name);
+                        ImGui.Text(game.ownerNode.NodeConfig.Name);
 
                         if (reel.spinning)
                             ImGui.PopStyleColor();
@@ -769,7 +775,7 @@ namespace RetroRoulette
                         {
                             ImGui.BeginDisabled(game.Variants().Count() == 1);
 
-                            if (ImGui.BeginCombo($"##options{game.ownerNode.NodeState.Name}+{game.name}", reel.variant))
+                            if (ImGui.BeginCombo($"##options{game.ownerNode.NodeConfig.Name}+{game.name}", reel.variant))
                             {
                                 foreach (string variant in game.Variants())
                                 {
@@ -846,11 +852,11 @@ namespace RetroRoulette
 
                         if (nextNode is GamesNode gamesNode)
                         {
-                            ImGui.TreeNodeEx(gamesNode.GamesNodeState.Name, ImGuiTreeNodeFlags.Leaf | ImGuiTreeNodeFlags.NoTreePushOnOpen);
+                            ImGui.TreeNodeEx(gamesNode.GamesNodeConfig.Name, ImGuiTreeNodeFlags.Leaf | ImGuiTreeNodeFlags.NoTreePushOnOpen);
                         }
                         else if (nextNode is GroupNode groupNode)
                         {
-                            if (ImGui.TreeNode($"{groupNode.NodeState.Name}###{groupNode.NodeState.id}"))
+                            if (ImGui.TreeNode($"{groupNode.NodeConfig.Name}###{groupNode.NodeConfig.id}"))
                             {
                                 nodeOpen = true;
                                 foldersStack.Push(new Queue<Node>(groupNode.subNodes));
@@ -863,7 +869,7 @@ namespace RetroRoulette
 
                         ImGui.PushItemFlag((ImGuiItemFlags)(1 << 12), enabled && nextNode is GroupNode groupNode2 && groupNode2.AllSubNodes().Any(sn => !sn.Enabled));
 
-                        if (ImGui.Checkbox($"##{nextNode.NodeState.Name}", ref enabled))
+                        if (ImGui.Checkbox($"##{nextNode.NodeConfig.Name}", ref enabled))
                         {
                             nextNode.Enabled = enabled;
                         }
@@ -913,12 +919,12 @@ namespace RetroRoulette
             }
         }
 
-        static GroupNodeState? savedconfigRootNodePendingSave = null;
+        static GroupNodeConfig? savedconfigRootNodePendingSave = null;
 
         private static void RenderConfigTab()
         {
             bool edited = false;
-            GroupNodeState savedconfigRootNodeRender = savedconfigRootNodePendingSave ?? (appState.RootNode.Clone() as GroupNodeState)!;
+            GroupNodeConfig savedconfigRootNodeRender = savedconfigRootNodePendingSave ?? (config.RootNode.Clone() as GroupNodeConfig)!;
 
             if (ImGui.BeginTable("nodetree", 3))
             {
@@ -937,15 +943,10 @@ namespace RetroRoulette
                 ImGui.EndTable();
             }
 
-            if (ImGui.IsItemEdited())
-                edited = true;
-
             if (edited && savedconfigRootNodePendingSave == null)
             {
                 savedconfigRootNodePendingSave = savedconfigRootNodeRender;
             }
-
-            ImGui.Separator();
 
             ImGui.BeginDisabled(savedconfigRootNodePendingSave == null);
 
@@ -953,7 +954,7 @@ namespace RetroRoulette
 
             if (ImGui.Button("Save") || (savedconfigRootNodePendingSave != null && saveHotkeyPressed))
             {
-                appState.RootNode = savedconfigRootNodeRender;
+                config.RootNode = savedconfigRootNodeRender;
                 rootNode = new GroupNode(savedconfigRootNodePendingSave);
                 SaveConfigToDisk();
 
@@ -968,6 +969,13 @@ namespace RetroRoulette
             }
 
             ImGui.EndDisabled();
+
+            if (savedconfigRootNodeRender.AllSubNodes().Any(n => n is MAMENodeConfig))
+            {
+                ImGui.Separator();
+
+                config.SharedMameState.RenderEditor();
+            }
         }
 
         static Dictionary<string, string[]> pathToFileTypes = new Dictionary<string, string[]>();
@@ -987,7 +995,7 @@ namespace RetroRoulette
             return pathToFileTypes[dirPath];
         }
 
-        private static void RenderConfigTabTree(NodeState node, ref bool edited, GroupNodeState? parentNode, GroupNodeState rootNode)
+        private static void RenderConfigTabTree(NodeConfig node, ref bool edited, GroupNodeConfig? parentNode, GroupNodeConfig rootNode)
         {
             ImGui.PushID(node.id);
 
@@ -1000,7 +1008,7 @@ namespace RetroRoulette
             ImGui.TableNextColumn();
 
             {
-                if (node is GamesNodeState gamesNode)
+                if (node is GamesNodeConfig gamesNode)
                 {
                     ImGui.SetCursorPosX(ImGui.GetCursorPosX() + ImGui.GetTreeNodeToLabelSpacing() + ImGui.GetStyle().ItemSpacing.X);
 
@@ -1010,7 +1018,7 @@ namespace RetroRoulette
                     if (ImGui.IsItemEdited())
                         edited = true;
                 }
-                else if (node is GroupNodeState groupNode)
+                else if (node is GroupNodeConfig groupNode)
                 {
                     if (node == rootNode)
                     {
@@ -1064,15 +1072,15 @@ namespace RetroRoulette
                         edited = true;
                     }
 
-                    void RenderMenu(GroupNodeState menuNode, ref bool edited)
+                    void RenderMenu(GroupNodeConfig menuNode, ref bool edited)
                     {
-                        foreach (NodeState menuNodeChild in new List<NodeState>(menuNode.ChildNodes))
+                        foreach (NodeConfig menuNodeChild in new List<NodeConfig>(menuNode.ChildNodes))
                         {
-                            if (menuNodeChild is GroupNodeState groupNodeChild)
+                            if (menuNodeChild is GroupNodeConfig groupNodeChild)
                             {
                                 bool isThisNode = groupNodeChild == node;
 
-                                if (!isThisNode && groupNodeChild.ChildNodes.Any(c => c is GroupNodeState))
+                                if (!isThisNode && groupNodeChild.ChildNodes.Any(c => c is GroupNodeConfig))
                                 {
                                     if (ImGui.BeginMenu($"{groupNodeChild.Name}##{groupNodeChild.id}"))
                                     {
@@ -1114,7 +1122,7 @@ namespace RetroRoulette
             }
 
             {
-                if (node is GroupNodeState groupNode)
+                if (node is GroupNodeConfig groupNode)
                 {
                     if (ImGui.Button("Add..."))
                     {
@@ -1123,39 +1131,27 @@ namespace RetroRoulette
 
                     if (ImGui.IsPopupOpen("add") && ImGui.BeginPopup("add"))
                     {
-                        static int MaxId(NodeState node)
-                        {
-                            if (node is GroupNodeState groupNode && groupNode.ChildNodes.Any())
-                            {
-                                return Math.Max(node.id, groupNode.ChildNodes.Max(MaxId));
-                            }
-                            else
-                            {
-                                return node.id;
-                            }
-                        };
-
                         if (ImGui.Selectable("Group"))
                         {
-                            groupNode.ChildNodes.Add(new GroupNodeState() { id = MaxId(rootNode) + 1 });
+                            groupNode.ChildNodes.Add(new GroupNodeConfig());
                             edited = true;
                         }
 
                         if (ImGui.Selectable("File Folder"))
                         {
-                            groupNode.ChildNodes.Add(new FileFolderNodeState() { id = MaxId(rootNode) + 1 });
+                            groupNode.ChildNodes.Add(new FileFolderNodeConfig());
                             edited = true;
                         }
 
                         if (ImGui.Selectable("Name List"))
                         {
-                            groupNode.ChildNodes.Add(new NameListNodeState() { id = MaxId(rootNode) + 1 });
+                            groupNode.ChildNodes.Add(new NameListNodeConfig());
                             edited = true;
                         }
 
                         if (ImGui.Selectable("MAME"))
                         {
-                            groupNode.ChildNodes.Add(new MAMENodeState() { id = MaxId(rootNode) + 1 });
+                            groupNode.ChildNodes.Add(new MAMENodeConfig());
                             edited = true;
                         }
 
@@ -1167,7 +1163,7 @@ namespace RetroRoulette
             ImGui.TableNextColumn();
 
             {
-                if (node is GamesNodeState gamesNode)
+                if (node is GamesNodeConfig gamesNode)
                 {
                     gamesNode.RenderConfigEditor(ref edited);
                 }
@@ -1177,9 +1173,9 @@ namespace RetroRoulette
 
             if (renderChildren)
             {
-                if (node is GroupNodeState groupNode)
+                if (node is GroupNodeConfig groupNode)
                 {
-                    foreach (NodeState childNode in new List<NodeState>(groupNode.ChildNodes))
+                    foreach (NodeConfig childNode in new List<NodeConfig>(groupNode.ChildNodes))
                     {
                         RenderConfigTabTree(childNode, ref edited, groupNode, rootNode);
                     }

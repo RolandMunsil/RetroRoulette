@@ -8,18 +8,18 @@ using System.Numerics;
 using System.Text;
 using System.Threading.Tasks;
 using System.Xml.Linq;
-using static RetroRoulette.AppState;
+using static RetroRoulette.AppConfig;
 
 namespace RetroRoulette
 {
-    public class NameListNodeState : GamesNodeState
+    public class NameListNodeConfig : GamesNodeConfig
     {
         public List<string> NameList { get; set; } = new List<string>();
         public List<string> PlayCommand { get; set; } = new List<string>();
 
-        public override NodeState Clone()
+        public override NodeConfig Clone()
         {
-            return new NameListNodeState
+            return new NameListNodeConfig
             {
                 id = this.id,
                 Name = this.Name,
@@ -93,12 +93,12 @@ namespace RetroRoulette
 
     class NameListNode : GamesNode
     {
-        public NameListNodeState State => (this.GamesNodeState as NameListNodeState)!;
+        public NameListNodeConfig Config => (this.GamesNodeConfig as NameListNodeConfig)!;
 
         private readonly List<SimpleGame> games;
         public override IEnumerable<Game> Games => games;
 
-        public NameListNode(NameListNodeState savedConfigNameListNode)
+        public NameListNode(NameListNodeConfig savedConfigNameListNode)
             : base(savedConfigNameListNode)
         {
             games = savedConfigNameListNode.NameList.Select(s => new SimpleGame(s, this, savedConfigNameListNode.PlayCommand.ToArray())).ToList();
