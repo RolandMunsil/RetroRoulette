@@ -35,7 +35,7 @@ namespace RetroRoulette
         public override void RenderConfigEditor(ref bool edited)
         {
             ImGui.SetNextItemWidth(400);
-            ImGui.InputText("##pathedit", ref dirPath, 512);
+            ImGui.InputText("##pathedit", ref dirPath, 512); // TODO indicate if file doesn't exist
 
             if (ImGui.IsItemEdited())
                 edited = true;
@@ -51,6 +51,7 @@ namespace RetroRoulette
 
             ImGui.SetNextItemWidth(120);
 
+            ImGui.BeginDisabled(dirPath.Length == 0);
             if (ImGui.BeginCombo("##extensions", (SupportedExtensions.Count == 0) ? "(no filetypes selected)" : String.Join(", ", SupportedExtensions), ImGuiComboFlags.NoArrowButton))
             {
                 foreach (string fileType in Program.GetFileTypesInDir(DirPath))
@@ -73,6 +74,7 @@ namespace RetroRoulette
 
                 ImGui.EndCombo();
             }
+            ImGui.EndDisabled();
 
             ImGui.SameLine();
 

@@ -11,6 +11,7 @@ using System.Numerics;
 using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Runtime.Intrinsics.Arm;
+using System.Security;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
@@ -24,30 +25,14 @@ using Veldrid.StartupUtilities;
 using Vulkan.Xlib;
 using static RetroRoulette.AppConfig;
 
-// Ideas for stuff to add support for:
-//  - MAME arcade games
-//  - Bluemaxima Flashpoint? Open up the SQLite databse in Data/. Maybe use the main curated list as an optional filter?
-//  - itch.io games?
-
-// Feature/improvement ideas:
-// - multithread startup
-// - list roms that weren't playable
-// - option to hide names but not systems (in reels)
-// - filters for additional flags on ROMs, and regions. E.g. only play unlicensed games, or only play Korean games
-// - maybe a way to tag folder as being type X of a type group. e.g. could tag as "popular" or "obscure" and have that as a separate weight adjustment
-//   - "Axes"
-// - some way of creating custom tags/collections? would be cool to do like a "Classics of Game" night
-// - support using no-intro, redump, etc xmls to get more info about ROMs?
-// - use xmls to group games with different names? maybe even group games across multiple systems?
-
 namespace RetroRoulette
 {
-    // Anything with "state" at the end is state that will be saved to disk and loaded on start
+    // Anything with "config" at the end is state that will be saved to disk and loaded on start
 
     public class AppConfig
     {
         public GroupNodeConfig RootNode { get; set; } = new GroupNodeConfig();
-        public SharedMAMEState SharedMameState { get; set; } = new SharedMAMEState();
+        public SharedMAMEConfig SharedMameConfig { get; set; } = new SharedMAMEConfig();
     }
 
     [JsonPolymorphic(TypeDiscriminatorPropertyName = "Type")]
@@ -340,7 +325,7 @@ namespace RetroRoulette
         // Config
 
         public static AppConfig config = new AppConfig();
-        static GroupNode rootNode; // TODO
+        static GroupNode rootNode;
         public static string gameNameFilter = "";
         static Node? nodeDraggedProgressBar = null;
 
@@ -758,6 +743,17 @@ namespace RetroRoulette
                             ImGui.TextWrapped(game.name);
                         }
                         ImGui.PopFont();
+
+                        if (game is MAMESystemGroup mameSystemGroup && ImGui.IsItemHovered())
+                        {
+                            ImGui.SetTooltip(
+                                $"Emulation status: {mameSystemGroup.DefaultSystem.DriverStatus}\n" +
+                                $"Players: {mameSystemGroup.DefaultSystem.Players}\n" +
+                                $"P1 control type: {mameSystemGroup.DefaultSystem.PlayerOneControlType}\n" +
+                                $"P1 control buttons: {mameSystemGroup.DefaultSystem.PlayerOneButtonCount}\n" +
+                                $"Year: {mameSystemGroup.DefaultSystem.Year}");
+                        }
+
                         ImGui.Text(game.ownerNode.NodeConfig.Name);
 
                         if (reel.spinning)
@@ -971,7 +967,7 @@ namespace RetroRoulette
             {
                 ImGui.Separator();
 
-                config.SharedMameState.RenderEditor();
+                config.SharedMameConfig.RenderEditor();
             }
         }
 
@@ -980,13 +976,19 @@ namespace RetroRoulette
         public static IEnumerable<string> GetFileTypesInDir(string dirPath)
         {
             // TODO periodically refresh
-            // TODO catch dir does not exist exception
 
             if (!pathToFileTypes.ContainsKey(dirPath))
             {
-                string[] exts = Directory.EnumerateFiles(dirPath, "*", SearchOption.AllDirectories).Select(filePath => Path.GetExtension(filePath).ToLower()).Distinct().ToArray();
-                Array.Sort(exts);
-                pathToFileTypes[dirPath] = exts;
+                try
+                {
+                    string[] exts = Directory.EnumerateFiles(dirPath, "*", SearchOption.AllDirectories).Select(filePath => Path.GetExtension(filePath).ToLower()).Distinct().ToArray();
+                    Array.Sort(exts);
+                    pathToFileTypes[dirPath] = exts;
+                }
+                catch (Exception ex) when (ex is IOException or SecurityException or UnauthorizedAccessException)
+                {
+                    pathToFileTypes[dirPath] = new string[] { };
+                }
             }
 
             return pathToFileTypes[dirPath];

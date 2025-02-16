@@ -83,7 +83,7 @@ namespace RetroRoulette
 
         public IEnumerable<MAMESystemFilterGroup> FilteredGroups(Filter filter)
         {
-            IEnumerable<MAMESystemFilterGroup> groups = Program.config.SharedMameState.MAMESystemFilterGroups;
+            IEnumerable<MAMESystemFilterGroup> groups = Program.config.SharedMameConfig.MAMESystemFilterGroups;
 
             if (filter.HasFlag(Filter.Base))
             {
@@ -385,7 +385,7 @@ namespace RetroRoulette
                 ImGui.TableNextColumn();
 
                 {
-                    List<MAMESystemInfo> listTrue = Program.config.SharedMameState.MAMESystemFilterGroups.Where(g => truePredicate(g.Keys)).SelectMany(g => g.Systems).ToList();
+                    List<MAMESystemInfo> listTrue = Program.config.SharedMameConfig.MAMESystemFilterGroups.Where(g => truePredicate(g.Keys)).SelectMany(g => g.Systems).ToList();
 
                     if (ImGui.Checkbox($"{trueText} ({listTrue.Count} systems)", ref includeTrue))
                     {
@@ -401,7 +401,7 @@ namespace RetroRoulette
                 ImGui.TableNextColumn();
 
                 {
-                    List<MAMESystemInfo> listFalse = Program.config.SharedMameState.MAMESystemFilterGroups.Where(g => !truePredicate(g.Keys)).SelectMany(g => g.Systems).ToList();
+                    List<MAMESystemInfo> listFalse = Program.config.SharedMameConfig.MAMESystemFilterGroups.Where(g => !truePredicate(g.Keys)).SelectMany(g => g.Systems).ToList();
 
                     if (ImGui.Checkbox($"{falseText} ({listFalse.Count} systems)", ref includeFalse))
                     {
@@ -424,57 +424,6 @@ namespace RetroRoulette
             }
 
             ImGui.Dummy(new Vector2(0, 12));
-
-            void RenderHistSelector<T>(string tableName, IEnumerable<MAMESystemFilterGroup> filteredGroups, Func<FilterKeys, T> fnMap, Dictionary<T, bool> valuesToInclude, ref bool edited)
-            {
-                if (!filteredGroups.Any())
-                    return;
-
-                if (ImGui.BeginTable(tableName, 2))
-                {
-                    ImGui.TableSetupColumn("value", ImGuiTableColumnFlags.WidthFixed, 125);
-
-                    List<(T Value, List<MAMESystemInfo> Systems)> valueMatchPairs = filteredGroups
-                        .Select(g => (Value: fnMap(g.Keys), g.Systems))
-                        .GroupBy(t => t.Value)
-                        .Select(g => (g.Key, g.SelectMany(gInner => gInner.Systems).ToList()))
-                        .OrderBy(t => t.Key)
-                        .ToList();
-
-                    int maxCount = valueMatchPairs.Max(t => t.Systems.Count);
-
-                    foreach ((T value, List<MAMESystemInfo> matches) in valueMatchPairs)
-                    {
-                        ImGui.TableNextColumn();
-
-                        bool include = valuesToInclude.GetValueOrDefault(value, true);
-                        if (ImGui.Checkbox($"{value}", ref include))
-                        {
-                            valuesToInclude[value] = include;
-                            edited = true;
-                        }
-
-                        //if (value is int intValue)
-                        //{
-                        //    if (year != maxYear && !yearIntsToSystems.ContainsKey(year + 1))
-                        //        ImGui.Separator();
-                        //}
-
-                        ImGui.TableNextColumn();
-
-                        ImGui.ProgressBar(matches.Count / (float)maxCount, new Vector2(-float.Epsilon, 0), $"{matches.Count}");
-
-                        if (ImGui.IsItemHovered())
-                        {
-                            ImGui.SetTooltip(String.Join("\n", matches.Take(30).Select(s => $"{s.NameCore} {s.NameVariantInfo}")));
-                        }
-                    }
-
-                    ImGui.EndTable();
-                }
-            }
-
-            // TODO why do the collapsingheaders overlap
 
             if (ImGui.BeginTable("cols", 4))
             {
@@ -570,6 +519,61 @@ namespace RetroRoulette
 
             ImGui.Unindent();
         }
+
+        static void RenderHistSelector<T>(string tableName, IEnumerable<MAMESystemFilterGroup> filteredGroups, Func<FilterKeys, T> fnMap, Dictionary<T, bool> valuesToInclude, ref bool edited)
+        {
+            if (!filteredGroups.Any())
+                return;
+
+            if (ImGui.BeginTable(tableName, 2))
+            {
+                ImGui.TableSetupColumn("value", ImGuiTableColumnFlags.WidthFixed, 125);
+
+                List<(T Value, List<MAMESystemInfo> Systems)> valueMatchPairs = filteredGroups
+                    .Select(g => (Value: fnMap(g.Keys), g.Systems))
+                    .GroupBy(t => t.Value)
+                    .Select(g => (g.Key, g.SelectMany(gInner => gInner.Systems).ToList()))
+                    .OrderBy(t => t.Key)
+                    .ToList();
+
+                int maxCount = valueMatchPairs.Max(t => t.Systems.Count);
+
+                foreach ((T value, List<MAMESystemInfo> matches) in valueMatchPairs)
+                {
+                    ImGui.TableNextColumn();
+
+                    bool include = valuesToInclude.GetValueOrDefault(value, true);
+                    if (ImGui.Checkbox($"{value}", ref include))
+                    {
+                        valuesToInclude[value] = include;
+                        edited = true;
+                    }
+
+                    ImGui.TableNextColumn();
+
+                    if (!include)
+                    {
+                        ImGui.PushStyleColor(ImGuiCol.PlotHistogram, new Vector4(0.2f, 0.2f, 0.2f, 1.0f));
+                        ImGui.PushStyleColor(ImGuiCol.FrameBg, new Vector4(0.1f, 0.1f, 0.1f, 1.0f));
+                        ImGui.PushStyleColor(ImGuiCol.Text, new Vector4(0.4f, 0.4f, 0.4f, 1.0f));
+                    }
+
+                    ImGui.ProgressBar(matches.Count / (float)maxCount, new Vector2(-float.Epsilon, 0), $"{matches.Count}");
+
+                    if (!include)
+                    {
+                        ImGui.PopStyleColor(3);
+                    }
+
+                    if (ImGui.IsItemHovered())
+                    {
+                        ImGui.SetTooltip(String.Join("\n", matches.Take(30).Select(s => $"{s.NameCore} {s.NameVariantInfo}")));
+                    }
+                }
+
+                ImGui.EndTable();
+            }
+        }
     }
 
     class MAMENode : GamesNode
@@ -605,7 +609,7 @@ namespace RetroRoulette
     {
     }
 
-    public class SharedMAMEState
+    public class SharedMAMEConfig
     {
         private string exePath = "";
         public string EXEPath { get => exePath; set => exePath = value; }
@@ -636,7 +640,7 @@ namespace RetroRoulette
             ImGui.SameLine();
 
             ImGui.SetNextItemWidth(400);
-            ImGui.InputText("##pathedit", ref exePath, 512);
+            ImGui.InputText("##pathedit", ref exePath, 512); // TODO indicate if file doesn't exist
 
             ImGui.SameLine();
 
@@ -663,14 +667,16 @@ namespace RetroRoulette
         }
     }
 
+    // TODO add some sort of status string
+
     class MAMESystemsBgTask : BackgroundTask
     {
-        private SharedMAMEState sharedMameState;
+        private SharedMAMEConfig sharedMameState;
 
         private string exePath;
         private List<MAMESystemInfo> systems = new List<MAMESystemInfo>();
 
-        public MAMESystemsBgTask(SharedMAMEState sharedMameState)
+        public MAMESystemsBgTask(SharedMAMEConfig sharedMameState)
         {
             this.sharedMameState = sharedMameState;
             this.exePath = sharedMameState.EXEPath;
@@ -684,39 +690,43 @@ namespace RetroRoulette
 
             cts.Token.ThrowIfCancellationRequested();
 
-            using (Process pVerifyroms = new Process())
+            try
             {
-                using (Process pListxml = new Process())
+                using (Process pVerifyroms = new Process())
                 {
-                    pListxml.StartInfo.FileName = exePath;
-                    pListxml.StartInfo.ArgumentList.Add("-listxml");
-                    pListxml.StartInfo.WorkingDirectory = Path.GetDirectoryName(exePath);
-                    pListxml.StartInfo.CreateNoWindow = true;
-                    pListxml.StartInfo.UseShellExecute = false;
-                    pListxml.StartInfo.RedirectStandardOutput = true;
+                    using (Process pListxml = new Process())
+                    {
+                        pListxml.StartInfo.FileName = exePath;
+                        pListxml.StartInfo.ArgumentList.Add("-listxml");
+                        pListxml.StartInfo.WorkingDirectory = Path.GetDirectoryName(exePath);
+                        pListxml.StartInfo.CreateNoWindow = true;
+                        pListxml.StartInfo.UseShellExecute = false;
+                        pListxml.StartInfo.RedirectStandardOutput = true;
 
-                    pListxml.OutputDataReceived += (object sendingProcess, DataReceivedEventArgs outLine) => listxmlOutput.AppendLine(outLine.Data);
+                        pListxml.OutputDataReceived += (object sendingProcess, DataReceivedEventArgs outLine) => listxmlOutput.AppendLine(outLine.Data);
 
-                    pListxml.Start();
-                    pListxml.BeginOutputReadLine();
+                        pListxml.Start();
+                        pListxml.BeginOutputReadLine();
 
-                    pVerifyroms.StartInfo.FileName = exePath;
-                    pVerifyroms.StartInfo.ArgumentList.Add("-verifyroms");
-                    pVerifyroms.StartInfo.WorkingDirectory = Path.GetDirectoryName(exePath);
-                    pVerifyroms.StartInfo.CreateNoWindow = true;
-                    pVerifyroms.StartInfo.UseShellExecute = false;
-                    pVerifyroms.StartInfo.RedirectStandardOutput = true;
+                        pVerifyroms.StartInfo.FileName = exePath;
+                        pVerifyroms.StartInfo.ArgumentList.Add("-verifyroms");
+                        pVerifyroms.StartInfo.WorkingDirectory = Path.GetDirectoryName(exePath);
+                        pVerifyroms.StartInfo.CreateNoWindow = true;
+                        pVerifyroms.StartInfo.UseShellExecute = false;
+                        pVerifyroms.StartInfo.RedirectStandardOutput = true;
 
-                    pVerifyroms.OutputDataReceived += (_, args) => { if (args.Data != null) verifyromsOutput.Add(args.Data); };
+                        pVerifyroms.OutputDataReceived += (_, args) => { if (args.Data != null) verifyromsOutput.Add(args.Data); };
 
-                    pVerifyroms.Start();
-                    pVerifyroms.BeginOutputReadLine();
+                        pVerifyroms.Start();
+                        pVerifyroms.BeginOutputReadLine();
 
-                    // TODO this throw exception... not good?
+                        // TODO this throw exception... not good?
 
-                    Task.WaitAll(pListxml.WaitForExitAsync(cts.Token), pVerifyroms.WaitForExitAsync(cts.Token));
+                        Task.WaitAll(pListxml.WaitForExitAsync(cts.Token), pVerifyroms.WaitForExitAsync(cts.Token));
+                    }
                 }
             }
+            catch (System.ComponentModel.Win32Exception) { }
 
             cts.Token.ThrowIfCancellationRequested();
 
@@ -730,68 +740,68 @@ namespace RetroRoulette
 
             systems = new List<MAMESystemInfo>();
 
-            XmlDocument xmldoc = new XmlDocument();
-            xmldoc.LoadXml(listxmlOutput.ToString());
-
-            cts.Token.ThrowIfCancellationRequested();
-
-            XmlNodeList mameElems = xmldoc.GetElementsByTagName("mame");
-
-            if (mameElems.Count == 1)
+            try
             {
-                XmlNode? mameXmlNode = mameElems[0];
+                XmlDocument xmldoc = new XmlDocument();
+                xmldoc.LoadXml(listxmlOutput.ToString());
 
-                if (mameXmlNode != null)
+                cts.Token.ThrowIfCancellationRequested();
+
+                XmlNodeList mameElems = xmldoc.GetElementsByTagName("mame");
+
+                if (mameElems.Count == 1)
                 {
-                    foreach (XmlNode machineNode in mameXmlNode.ChildNodes)
+                    XmlNode? mameXmlNode = mameElems[0];
+
+                    if (mameXmlNode != null)
                     {
-                        XmlAttributeCollection? attributes = machineNode.Attributes;
+                        foreach (XmlNode machineNode in mameXmlNode.ChildNodes)
+                        {
+                            XmlAttributeCollection? attributes = machineNode.Attributes;
 
-                        if (attributes == null)
-                            continue;
+                            if (attributes == null)
+                                continue;
 
-                        // Ignore anything the user doesn't have the ROMs for.
+                            // Ignore anything the user doesn't have the ROMs for.
 
-                        XmlAttribute? nameAttr = attributes["name"];
+                            XmlAttribute? nameAttr = attributes["name"];
 
-                        if (nameAttr == null || !playableSets.Contains(nameAttr.Value))
-                            continue;
+                            if (nameAttr == null || !playableSets.Contains(nameAttr.Value))
+                                continue;
 
-                        // Ignore anything that can't run. Pretty straightforward.
-                        // Note: "isdevice" seems to imply runnable="no" so this de facto excludes all devices
+                            // Ignore anything that can't run. Pretty straightforward.
+                            // Note: "isdevice" seems to imply runnable="no" so this de facto excludes all devices
 
-                        if (attributes["runnable"]?.Value == "no")
-                            continue;
+                            if (attributes["runnable"]?.Value == "no")
+                                continue;
 
-                        // Ignore any drivers which aren't working
+                            // Ignore any drivers which aren't working
 
-                        if (machineNode["driver"]?.Attributes?["status"]?.Value == "preliminary")
-                            continue;
+                            if (machineNode["driver"]?.Attributes?["status"]?.Value == "preliminary")
+                                continue;
 
-                        // After the above filters, there are only like two 0-player games - ignore em!
+                            // After the above filters, there are only like two 0-player games - ignore em!
 
-                        if (machineNode["input"]?.Attributes?["players"]?.Value == "0")
-                            continue;
+                            if (machineNode["input"]?.Attributes?["players"]?.Value == "0")
+                                continue;
 
-                        // BIOSes are not super exciting and there are also very few of them
+                            // BIOSes are not super exciting and there are also very few of them
 
-                        if (attributes["isbios"]?.Value == "yes")
-                            continue;
+                            if (attributes["isbios"]?.Value == "yes")
+                                continue;
 
-                        systems.Add(new MAMESystemInfo(machineNode));
+                            systems.Add(new MAMESystemInfo(machineNode));
+                        }
                     }
                 }
             }
-
-            if (systems.Count == 0)
-            {
-                // TODO some sort of warning?
-            }
+            catch (XmlException) { }
         }
 
         protected override void OnWorkComplete()
         {
             // TODO refresh rootNode when we refresh the list of games
+            // TODO maybe don't set if systems empty? Display error?
 
             sharedMameState.MAMESystems = this.systems;
             Program.SaveConfigToDisk();
@@ -869,13 +879,15 @@ namespace RetroRoulette
         public override IEnumerable<string> Variants() => systems.Select(s => s.NameVariantInfo);
         public override string DefaultVariant() => defaultVariant;
 
+        public MAMESystemInfo DefaultSystem => systems.FirstOrDefault(s => s.NameVariantInfo == defaultVariant)!;
+
         public override void PlayVariant(string variant)
         {
             string shortName = systems.Single(s => s.NameVariantInfo == variant).ShortName;
 
             Process p = new Process();
 
-            p.StartInfo.FileName = Program.config.SharedMameState.EXEPath;
+            p.StartInfo.FileName = Program.config.SharedMameConfig.EXEPath;
             p.StartInfo.ArgumentList.Add(shortName);
 
             // MAME looks for paths on the working directory (annoying)
