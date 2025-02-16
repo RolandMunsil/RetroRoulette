@@ -1,7 +1,9 @@
 ﻿using ImGuiNET;
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Collections.Immutable;
+using System.Data;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
@@ -20,18 +22,19 @@ namespace RetroRoulette
     {
         // Filtering
 
+        // TODO fix names
+
         [JsonInclude] public bool IncludeHasDisplay = true;
         [JsonInclude] public bool IncludeNoDisplay = false;
         [JsonInclude] public bool IncludeHasSoftwareList = false;
         [JsonInclude] public bool IncludeNoSoftwareList = true;
-        [JsonInclude] public bool IncludeImperfectDriver = false;
+        [JsonInclude] public bool IncludeImperfectDriver = true;
         [JsonInclude] public bool IncludeGoodDriver = true;
-        public Dictionary<string, bool> PlayerOneControlTypesInclude { get; set; } = new Dictionary<string, bool>();
-        public Dictionary<int, bool> PlayerOneButtonCountsInclude { get; set; } = new Dictionary<int, bool>();
-        public Dictionary<int, bool> PlayerCountsInclude { get; set; } = new Dictionary<int, bool>();
+        [JsonInclude] public Dictionary<string, bool> PlayerOneControlTypesInclude = new Dictionary<string, bool>();
+        [JsonInclude] public Dictionary<int, bool> PlayerOneButtonCountsInclude = new Dictionary<int, bool>();
+        [JsonInclude] public Dictionary<int, bool> PlayerCountsInclude = new Dictionary<int, bool>();
         [JsonInclude] public bool BelieveGuessedYears = true;
-        public Dictionary<string, bool> YearsInclude { get; set; } = new Dictionary<string, bool>();
-
+        [JsonInclude] public Dictionary<string, bool> YearsInclude = new Dictionary<string, bool>();
 
         public override NodeConfig Clone()
         {
@@ -51,22 +54,328 @@ namespace RetroRoulette
                 PlayerOneButtonCountsInclude = new Dictionary<int, bool>(this.PlayerOneButtonCountsInclude),
                 PlayerCountsInclude = new Dictionary<int, bool>(this.PlayerCountsInclude),
                 BelieveGuessedYears = this.BelieveGuessedYears,
-                YearsInclude = this.YearsInclude,
+                YearsInclude = new Dictionary<string, bool>(this.YearsInclude),
             };
+        }
+
+        string FixedYear(string year)
+        {
+            if (BelieveGuessedYears && year.Length == 5 && year[4] == '?')
+            {
+                return year[0..4];
+            }
+
+            return year;
+        }
+
+        [Flags]
+        public enum Filter
+        {
+            Base        = 1 << 0,
+            ControlType = 1 << 1,
+            ButtonCount = 1 << 2,
+            PlayerCount = 1 << 3,
+            Year        = 1 << 4,
+
+            None = 0,
+            All = Base | ControlType | ButtonCount | PlayerCount | Year,
+        }
+
+        public IEnumerable<MAMESystemFilterGroup> FilteredGroups(Filter filter)
+        {
+            IEnumerable<MAMESystemFilterGroup> groups = Program.config.SharedMameState.MAMESystemFilterGroups;
+
+            if (filter.HasFlag(Filter.Base))
+            {
+                groups = groups
+                    .Where(g => (IncludeHasDisplay && g.Keys.HasDisplay) || (IncludeNoDisplay && !g.Keys.HasDisplay))
+                    .Where(g => (IncludeHasSoftwareList && g.Keys.HasSoftwareList) || (IncludeNoSoftwareList && !g.Keys.HasSoftwareList));
+
+                if (IncludeImperfectDriver && !IncludeGoodDriver)
+                {
+                    groups = groups.Where(g => g.Keys.DriverStatus == "imperfect");
+                }
+                else if (IncludeGoodDriver && !IncludeImperfectDriver)
+                {
+                    groups = groups.Where(g => g.Keys.DriverStatus == "good");
+                }
+            }
+
+            if (filter.HasFlag(Filter.ControlType))
+            {
+                groups = groups
+                    .Where(g => PlayerOneControlTypesInclude.GetValueOrDefault(g.Keys.PlayerOneControlType, true));
+            }
+
+            if (filter.HasFlag(Filter.ButtonCount))
+            {
+                groups = groups
+                    .Where(g => PlayerOneButtonCountsInclude.GetValueOrDefault(g.Keys.PlayerOneButtonCount, true));
+            }
+
+            if (filter.HasFlag(Filter.PlayerCount))
+            {
+                groups = groups
+                    .Where(g => PlayerCountsInclude.GetValueOrDefault(g.Keys.Players, true));
+            }
+
+            if (filter.HasFlag(Filter.Year))
+            {
+                groups = groups
+                    .Where(g => YearsInclude.GetValueOrDefault(FixedYear(g.Keys.Year), true));
+            }
+
+            return groups;
+        }
+
+        public IEnumerable<(int, int)> IntListToPairs(IEnumerable<int> intList)
+        {
+            int start = intList.First();
+            int cur = intList.First();
+
+            foreach (int n in intList.Skip(1))
+            {
+                if (n == cur + 1)
+                {
+                    cur = n;
+                }
+                else
+                {
+                    yield return (start, cur);
+                    start = n;
+                    cur = n;
+                }
+            }
+
+            yield return (start, cur);
+        }
+
+        public string SummarizeIntList(IEnumerable<int> possibilites, Predicate<int> isEnabled)
+        {
+            if (!possibilites.Any())
+                return "";
+
+            List<(int, int)> pairs = new List<(int, int)>();
+
+            {
+                int? start = null;
+                int prev = possibilites.First();
+
+                foreach (int n in possibilites)
+                {
+                    if (start == null && isEnabled(n))
+                    {
+                        start = n;
+                    }
+                    else if (start != null && !isEnabled(n))
+                    {
+                        pairs.Add((start.Value, prev));
+                        start = null;
+                    }
+
+                    prev = n;
+                }
+
+                if (start != null)
+                {
+                    pairs.Add((start.Value, prev));
+                }
+            }
+
+            int minVal = possibilites.Min();
+            int maxVal = possibilites.Max();
+
+            if (pairs.Count == 1 && pairs[0].Item1 == minVal && pairs[0].Item2 == maxVal)
+            {
+                return "";
+            }
+            else
+            {
+                StringBuilder sb = new StringBuilder();
+
+                foreach ((int min, int max) in pairs)
+                {
+                    if (sb.Length > 0)
+                    {
+                        sb.Append(" or ");
+                    }
+
+                    if (min == max)
+                    {
+                        sb.Append($"{max}");
+                    }
+                    else if (min == minVal)
+                    {
+                        sb.Append($"<={max}");
+                    }
+                    else if (max == maxVal)
+                    {
+                        sb.Append($">={min}");
+                    }
+                    else
+                    {
+                        sb.Append($"{min}-{max}");
+                    }
+                }
+
+                return sb.ToString();
+            }
         }
 
         public override void RenderConfigEditor(ref bool edited)
         {
-            if (!ImGui.CollapsingHeader("Show filter rules"))
+            StringBuilder filtersDesc = new StringBuilder();
+            {
+                if (IncludeNoDisplay)
+                {
+                    if (IncludeHasDisplay)
+                        filtersDesc.Append("Incl. displayless");
+                    else
+                        filtersDesc.Append("Only displayless");
+                }
+
+                if (IncludeHasSoftwareList)
+                {
+                    if (filtersDesc.Length > 0)
+                        filtersDesc.Append(", ");
+
+                    if (IncludeNoSoftwareList)
+                        filtersDesc.Append("Incl. softlist");
+                    else
+                        filtersDesc.Append("Only softlist");
+                }
+
+                if (!(IncludeImperfectDriver && IncludeGoodDriver))
+                {
+                    if (filtersDesc.Length > 0)
+                        filtersDesc.Append(", ");
+
+                    if (IncludeImperfectDriver)
+                        filtersDesc.Append("Only \"imperfect\"");
+                    else
+                        filtersDesc.Append("Only \"good\"");
+                }
+
+                {
+                    List<string> orderedControlTypes = FilteredGroups(Filter.All & ~Filter.ControlType)
+                        .Select(g => g.Keys.PlayerOneControlType).Distinct()
+                        .Order()
+                        .ToList();
+
+                    List<string> includedControlTypes = orderedControlTypes.Where(c => PlayerOneControlTypesInclude.GetValueOrDefault(c, true)).ToList();
+
+                    if (includedControlTypes.Count != orderedControlTypes.Count)
+                    {
+                        if (filtersDesc.Length > 0)
+                            filtersDesc.Append(" | ");
+
+                        filtersDesc.Append("Only ");
+                        filtersDesc.Append(string.Join(", ", includedControlTypes));
+                    }
+                }
+
+                {
+                    List<int> displayedButtonCounts = FilteredGroups(Filter.All & ~Filter.ButtonCount)
+                        .Select(g => g.Keys.PlayerOneButtonCount)
+                        .Distinct()
+                        .Order()
+                        .ToList();
+
+                    string countsSummary = SummarizeIntList(displayedButtonCounts, c => PlayerOneButtonCountsInclude.GetValueOrDefault(c, true));
+
+                    if (countsSummary.Length > 0)
+                    {
+                        if (filtersDesc.Length > 0)
+                            filtersDesc.Append(" | ");
+
+                        filtersDesc.Append($"Button count {countsSummary}");
+                    }
+                }
+
+                {
+                    List<int> displayedPlayerCounts = FilteredGroups(Filter.All & ~Filter.PlayerCount)
+                        .Select(g => g.Keys.Players)
+                        .Distinct()
+                        .Order()
+                        .ToList();
+
+                    string countsSummary = SummarizeIntList(displayedPlayerCounts, c => PlayerCountsInclude.GetValueOrDefault(c, true));
+
+                    if (countsSummary.Length > 0)
+                    {
+                        if (filtersDesc.Length > 0)
+                            filtersDesc.Append(" | ");
+
+                        filtersDesc.Append($"Player count {countsSummary}");
+                    }
+                }
+
+                {
+                    IEnumerable<string> displayedYears = FilteredGroups(Filter.All & ~Filter.Year)
+                        .Select(g => g.Keys.Year)
+                        .Distinct()
+                        .Select(FixedYear)
+                        .Distinct();
+
+                    List<int> displayedKnownYears = displayedYears
+                        .Select(year => int.TryParse(year, out int y) ? y : -1 )
+                        .Where(y => y != -1)
+                        .Order()
+                        .ToList();
+
+                    string countsSummary = SummarizeIntList(displayedKnownYears, c => YearsInclude.GetValueOrDefault(c.ToString(), true));
+
+                    if (countsSummary.Length > 0)
+                        countsSummary = $"Year {countsSummary}";
+
+                    if (!BelieveGuessedYears)
+                    {
+                        if (countsSummary.Length > 0)
+                            countsSummary += "; ";
+                        countsSummary += "Don't believe guessed years";
+                    }
+
+                    List<string> uncertainYears = displayedYears
+                        .Where(year => !int.TryParse(year, out _))
+                        .Distinct()
+                        .ToList();
+
+                    List<string> includedUncertainYears = uncertainYears
+                        .Where(year => YearsInclude.GetValueOrDefault(year, true))
+                        .Order()
+                        .ToList();
+
+                    if (includedUncertainYears.Count != uncertainYears.Count)
+                    {
+                        if (countsSummary.Length > 0)
+                            countsSummary += "; ";
+
+                        if (includedUncertainYears.Count == 0)
+                        {
+                            countsSummary += $"No uncertain years";
+                        }
+                        else
+                        {
+                            countsSummary += $"Incl. uncertain {string.Join(", ", includedUncertainYears)}";
+                        }
+                    }
+
+                    if (countsSummary.Length > 0)
+                    {
+                        if (filtersDesc.Length > 0)
+                            filtersDesc.Append(" | ");
+
+                        filtersDesc.Append(countsSummary);
+                    }
+                }
+            }
+
+            if (!ImGui.CollapsingHeader($"Filter: {filtersDesc.ToString()}###filter"))
                 return;
 
             ImGui.Indent();
 
-            // TODO can't calculate the filters inline, it means they don't execute if the section is collapsed!
-
-            IEnumerable<MAMESystemInfo> mameSystemInfoFiltered = new List<MAMESystemInfo>(Program.config.SharedMameState.MAMESystems);
-
-            void PairedFilters(string title, Func<MAMESystemInfo, bool> truePredicate, string trueText, ref bool includeTrue, string falseText, ref bool includeFalse, ref bool edited)
+            void PairedFilters(string title, Func<FilterKeys, bool> truePredicate, string trueText, ref bool includeTrue, string falseText, ref bool includeFalse, ref bool edited)
             {
                 ImGui.TableNextColumn();
 
@@ -76,46 +385,33 @@ namespace RetroRoulette
                 ImGui.TableNextColumn();
 
                 {
-                    IEnumerable<MAMESystemInfo> enumerableTrue = Program.config.SharedMameState.MAMESystems.Where(s => truePredicate(s));
+                    List<MAMESystemInfo> listTrue = Program.config.SharedMameState.MAMESystemFilterGroups.Where(g => truePredicate(g.Keys)).SelectMany(g => g.Systems).ToList();
 
-                    if (ImGui.Checkbox($"{trueText} ({enumerableTrue.Count()} systems)", ref includeTrue))
+                    if (ImGui.Checkbox($"{trueText} ({listTrue.Count} systems)", ref includeTrue))
                     {
                         edited = true;
                     }
 
                     if (ImGui.IsItemHovered())
                     {
-                        ImGui.SetTooltip(String.Join("\n", enumerableTrue.Select(s => $"{s.NameCore} {s.NameVariantInfo}").Take(30)));
+                        ImGui.SetTooltip(String.Join("\n", listTrue.Select(s => $"{s.NameCore} {s.NameVariantInfo}").Take(30)));
                     }
                 }
 
                 ImGui.TableNextColumn();
 
                 {
-                    IEnumerable<MAMESystemInfo> enumerableFalse = Program.config.SharedMameState.MAMESystems.Where(s => !truePredicate(s));
+                    List<MAMESystemInfo> listFalse = Program.config.SharedMameState.MAMESystemFilterGroups.Where(g => !truePredicate(g.Keys)).SelectMany(g => g.Systems).ToList();
 
-                    if (ImGui.Checkbox($"{falseText} ({enumerableFalse.Count()} systems)", ref includeFalse))
+                    if (ImGui.Checkbox($"{falseText} ({listFalse.Count} systems)", ref includeFalse))
                     {
                         edited = true;
                     }
 
                     if (ImGui.IsItemHovered())
                     {
-                        ImGui.SetTooltip(String.Join("\n", enumerableFalse.Select(s => $"{s.NameCore} {s.NameVariantInfo}").Take(30)));
+                        ImGui.SetTooltip(String.Join("\n", listFalse.Select(s => $"{s.NameCore} {s.NameVariantInfo}").Take(30)));
                     }
-                }
-
-                if (includeTrue && !includeFalse)
-                {
-                    mameSystemInfoFiltered = mameSystemInfoFiltered.Where(s => truePredicate(s));
-                }
-                else if (includeFalse && !includeTrue)
-                {
-                    mameSystemInfoFiltered = mameSystemInfoFiltered.Where(s => !truePredicate(s));
-                }
-                else if (!includeTrue && !includeFalse)
-                {
-                    mameSystemInfoFiltered = Enumerable.Empty<MAMESystemInfo>();
                 }
             };
 
@@ -129,16 +425,25 @@ namespace RetroRoulette
 
             ImGui.Dummy(new Vector2(0, 12));
 
-            void RenderHistSelector<T>(string tableName, Func<MAMESystemInfo, T> fnMap, Dictionary<T, bool> valuesToInclude, ref bool edited)
+            void RenderHistSelector<T>(string tableName, IEnumerable<MAMESystemFilterGroup> filteredGroups, Func<FilterKeys, T> fnMap, Dictionary<T, bool> valuesToInclude, ref bool edited)
             {
+                if (!filteredGroups.Any())
+                    return;
+
                 if (ImGui.BeginTable(tableName, 2))
                 {
                     ImGui.TableSetupColumn("value", ImGuiTableColumnFlags.WidthFixed, 125);
 
-                    Dictionary<T, List<MAMESystemInfo>> valuesToMatches = mameSystemInfoFiltered.GroupBy(fnMap).ToDictionary(g => g.Key, g => g.ToList());
-                    int maxCount = valuesToMatches.Values.Max(s => s.Count);
+                    List<(T Value, List<MAMESystemInfo> Systems)> valueMatchPairs = filteredGroups
+                        .Select(g => (Value: fnMap(g.Keys), g.Systems))
+                        .GroupBy(t => t.Value)
+                        .Select(g => (g.Key, g.SelectMany(gInner => gInner.Systems).ToList()))
+                        .OrderBy(t => t.Key)
+                        .ToList();
 
-                    foreach ((T value, List<MAMESystemInfo> matches) in valuesToMatches.OrderBy(kv => kv.Key))
+                    int maxCount = valueMatchPairs.Max(t => t.Systems.Count);
+
+                    foreach ((T value, List<MAMESystemInfo> matches) in valueMatchPairs)
                     {
                         ImGui.TableNextColumn();
 
@@ -149,10 +454,11 @@ namespace RetroRoulette
                             edited = true;
                         }
 
-                        if (!include)
-                        {
-                            mameSystemInfoFiltered = mameSystemInfoFiltered.Except(matches);
-                        }
+                        //if (value is int intValue)
+                        //{
+                        //    if (year != maxYear && !yearIntsToSystems.ContainsKey(year + 1))
+                        //        ImGui.Separator();
+                        //}
 
                         ImGui.TableNextColumn();
 
@@ -168,141 +474,98 @@ namespace RetroRoulette
                 }
             }
 
-            if (ImGui.CollapsingHeader("Control method") && mameSystemInfoFiltered.Any())
+            // TODO why do the collapsingheaders overlap
+
+            if (ImGui.BeginTable("cols", 4))
             {
-                ImGui.AlignTextToFramePadding();
-                ImGui.TextUnformatted("Player 1 controller type:");
-                RenderHistSelector("ctrltypeselect", s => s.PlayerOneControlType, PlayerOneControlTypesInclude, ref edited);
+                ImGui.TableNextColumn();
 
-                ImGui.TextUnformatted("Player 1 controller button count:");
-                RenderHistSelector("ctrlbtnselect", s => s.PlayerOneButtonCount, PlayerOneButtonCountsInclude, ref edited);
-            }
-
-            ImGui.Dummy(new Vector2(0, 12));
-
-            if (ImGui.CollapsingHeader("Player count") && mameSystemInfoFiltered.Any())
-            {
-                RenderHistSelector("playercountselect", s => s.Players, PlayerCountsInclude, ref edited);
-            }
-
-            ImGui.Dummy(new Vector2(0, 12));
-
-            if (ImGui.CollapsingHeader("Year") && mameSystemInfoFiltered.Any())
-            {
-                if (ImGui.Checkbox("(Believe guessed years?)", ref BelieveGuessedYears))
-                    edited = true;
-
-                ImGui.Separator();
-
-                string FixedYear(string year)
+                ImGui.TextUnformatted("Player 1 control type:");
                 {
-                    if (BelieveGuessedYears && year.Length == 5 && year[4] == '?')
-                    {
-                        return year[0..4];
-                    }
-
-                    return year;
+                    RenderHistSelector("ctrltypeselect", FilteredGroups(Filter.All & ~Filter.ControlType), s => s.PlayerOneControlType, PlayerOneControlTypesInclude, ref edited);
                 }
 
-                List<(string YearString, List<MAMESystemInfo> Systems)> yearStringsAndSystems = mameSystemInfoFiltered
-                    .GroupBy(sys => FixedYear(sys.Year))
-                    .Select((grp) => (YearString: grp.Key, Systems: grp.ToList()))
-                    .OrderBy(tup => tup.YearString)
-                    .ToList();
+                ImGui.TableNextColumn();
 
-                Dictionary<int, (List<MAMESystemInfo> Systems, string YearString)> yearIntsToSystems = yearStringsAndSystems
-                    .Select(tup => (YearInt: int.TryParse(tup.YearString, out int year) ? year : -1, tup.Systems, tup.YearString))
-                    .Where(tup => tup.YearInt != -1)
-                    .ToDictionary(t => t.YearInt, t => (t.Systems, t.YearString));
-
-                if (yearIntsToSystems.Any())
+                ImGui.TextUnformatted("Player 1 button count:");
                 {
-                    if (ImGui.BeginTable("yearselect", 2))
+                    RenderHistSelector("ctrlbtnselect", FilteredGroups(Filter.All & ~Filter.ButtonCount), s => s.PlayerOneButtonCount, PlayerOneButtonCountsInclude, ref edited);
+                }
+
+                ImGui.TableNextColumn();
+
+                ImGui.TextUnformatted("Player count:");
+                {
+                    RenderHistSelector("playercountselect", FilteredGroups(Filter.All & ~Filter.PlayerCount), s => s.Players, PlayerCountsInclude, ref edited);
+                }
+
+                ImGui.TableNextColumn();
+
+                ImGui.TextUnformatted("Year:");
+                {
+                    IEnumerable<MAMESystemFilterGroup> filteredGroups = FilteredGroups(Filter.All & ~Filter.Year);
+
+                    if (filteredGroups.Any())
                     {
-                        ImGui.TableSetupColumn("year", ImGuiTableColumnFlags.WidthFixed, 70);
+                        if (ImGui.Checkbox("(Believe guessed years?)", ref BelieveGuessedYears))
+                            edited = true;
 
-                        int maxYearCount = yearIntsToSystems.Values.Max(t => t.Systems.Count);
+                        ImGui.Separator();
 
-                        int minYear = yearIntsToSystems.Keys.Min();
-                        int maxYear = yearIntsToSystems.Keys.Max();
+                        RenderHistSelector(
+                            "yearselect",
+                            filteredGroups.Where(g => int.TryParse(FixedYear(g.Keys.Year), out _)),
+                            sys => FixedYear(sys.Year),
+                            YearsInclude,
+                            ref edited
+                        );
 
-                        for (int year = minYear; year <= maxYear; year++)
+                        ImGui.Separator();
+
+                        ImGui.AlignTextToFramePadding();
+                        ImGui.TextUnformatted("Uncertain years:");
+
+                        IEnumerable<(string YearString, List<MAMESystemInfo> Systems)> uncertainYearsAndSystems = filteredGroups
+                            .GroupBy(g => FixedYear(g.Keys.Year))
+                            .Where(grp => !int.TryParse(grp.Key, out _))
+                            .Select(grp => (YearString: grp.Key, Systems: grp.SelectMany(g => g.Systems).ToList()))
+                            .OrderBy(tup => tup.YearString);
+
+                        foreach ((string year, List<MAMESystemInfo> systemsMatch) in uncertainYearsAndSystems)
                         {
-                            if (!yearIntsToSystems.ContainsKey(year))
-                                continue;
+                            string strDisplay;
 
-                            (List<MAMESystemInfo> systemsMatch, string yearString) = yearIntsToSystems[year]; 
-
-                            ImGui.TableNextColumn();
-
-                            bool include = YearsInclude.GetValueOrDefault(yearString, true);
-                            if (ImGui.Checkbox($"{year}", ref include))
+                            if (year == "????")
                             {
-                                YearsInclude[yearString] = include;
+                                strDisplay = "Completely unknown";
+                            }
+                            else if (year.Length == 5)
+                            {
+                                strDisplay = $"Probably {year[0..4]}";
+                            }
+                            else
+                            {
+                                strDisplay = "Unknown " + year.Replace('?', '0') + "-" + year.Replace('?', '9');
+                            }
+
+                            strDisplay += $" ({systemsMatch.Count} systems)";
+
+                            bool include = YearsInclude.GetValueOrDefault(year, true);
+                            if (ImGui.Checkbox(strDisplay, ref include))
+                            {
+                                YearsInclude[year] = include;
                                 edited = true;
                             }
 
-                            if (!include)
-                            {
-                                mameSystemInfoFiltered = mameSystemInfoFiltered.Except(systemsMatch);
-                            }
-
-                            if (year != maxYear && !yearIntsToSystems.ContainsKey(year + 1))
-                                ImGui.Separator();
-
-                            ImGui.TableNextColumn();
-
-                            ImGui.ProgressBar(systemsMatch.Count / (float)maxYearCount, new Vector2(-float.Epsilon, 0), $"{systemsMatch.Count}");
-
                             if (ImGui.IsItemHovered())
                             {
-                                ImGui.SetTooltip(String.Join("\n", systemsMatch.Select(s => $"{s.NameCore} {s.NameVariantInfo}").Take(30)));
+                                ImGui.SetTooltip(String.Join("\n", systemsMatch.Take(30).Select(s => $"{s.NameCore} {s.NameVariantInfo}")));
                             }
                         }
-
-                        ImGui.EndTable();
                     }
                 }
 
-                ImGui.Separator();
-
-                ImGui.AlignTextToFramePadding();
-                ImGui.TextUnformatted("Uncertain years:");
-
-                foreach ((string yearString, List<MAMESystemInfo> systemsMatch) in yearStringsAndSystems)
-                {
-                    if (!int.TryParse(yearString, out _))
-                    {
-                        string strDisplay;
-
-                        if (yearString == "????")
-                        {
-                            strDisplay = "Completely unknown";
-                        }
-                        else if (yearString.Length == 5)
-                        {
-                            strDisplay = $"Probably {yearString[0..4]}";
-                        }
-                        else
-                        {
-                            strDisplay = "Unknown " + yearString.Replace('?', '0') + "-" + yearString.Replace('?', '9');
-                        }
-
-                        strDisplay += $" ({systemsMatch.Count} systems)";
-
-                        bool include = YearsInclude.GetValueOrDefault(yearString, true);
-                        if (ImGui.Checkbox(strDisplay, ref include))
-                        {
-                            YearsInclude[yearString] = include;
-                            edited = true;
-                        }
-
-                        if (ImGui.IsItemHovered())
-                        {
-                            ImGui.SetTooltip(String.Join("\n", systemsMatch.Select(s => $"{s.NameCore} {s.NameVariantInfo}").Take(30)));
-                        }
-                    }
-                }
+                ImGui.EndTable();
             }
 
             ImGui.Unindent();
@@ -321,7 +584,8 @@ namespace RetroRoulette
         {
             // TODO is this the best way to combine variants?
 
-            this.games = Program.config.SharedMameState.MAMESystems
+            this.games = mameNode.FilteredGroups(MAMENodeConfig.Filter.All)
+                .SelectMany(g => g.Systems)
                 .GroupBy(s => (ParentName: s.CloneOf ?? s.ShortName, s.NameCore))
                 .Select(grp => new MAMESystemGroup(grp.Key.NameCore, grp.Key.ParentName, grp, this))
                 .ToList();
@@ -333,13 +597,38 @@ namespace RetroRoulette
         }
     }
 
+    public record class FilterKeys(bool HasDisplay, bool HasSoftwareList, string DriverStatus, string PlayerOneControlType, int PlayerOneButtonCount, int Players, string Year)
+    {
+    }
+
+    public record class MAMESystemFilterGroup(FilterKeys Keys, List<MAMESystemInfo> Systems)
+    {
+    }
+
     public class SharedMAMEState
     {
         private string exePath = "";
         public string EXEPath { get => exePath; set => exePath = value; }
-        public List<MAMESystemInfo> MAMESystems { get; set; } = new List<MAMESystemInfo>();
+
+        private List<MAMESystemInfo> mameSystems = new List<MAMESystemInfo>();
+        public List<MAMESystemInfo> MAMESystems 
+        {
+            get => mameSystems;
+            set
+            {
+                mameSystems = value;
+
+                MAMESystemFilterGroups = MAMESystems
+                    .GroupBy(s => new FilterKeys(s.HasDisplay, s.HasSoftwareList, s.DriverStatus, s.PlayerOneControlType, s.PlayerOneButtonCount, s.Players, s.Year))
+                    .Select(g => new MAMESystemFilterGroup(g.Key, g.ToList()))
+                    .ToList();
+            }
+        }
+        public List<MAMESystemFilterGroup> MAMESystemFilterGroups = new List<MAMESystemFilterGroup>();
 
         private static MAMESystemsBgTask? mameSystemsBgTask = null;
+
+        
 
         public void RenderEditor()
         {
@@ -550,7 +839,7 @@ namespace RetroRoulette
             }
             else
             {
-                PlayerOneControlType = "";
+                PlayerOneControlType = "(empty)";
                 PlayerOneButtonCount = 0;
             }
 

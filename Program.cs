@@ -57,9 +57,7 @@ namespace RetroRoulette
     [JsonDerivedType(typeof(MAMENodeConfig), "MAME")]
     public abstract class NodeConfig
     {
-        private static int nextId = 1;
-
-        public int id = nextId++; // TODO if config tab is open, this can eventually wrap around and cause collisions
+        public Guid id = Guid.NewGuid();
         private string name = "";
 
         [JsonPropertyOrder(-2)]
@@ -358,7 +356,6 @@ namespace RetroRoulette
             try
             {
                 config = JsonSerializer.Deserialize<AppConfig>(File.ReadAllText("rr_config.txt"));
-                // config.InitIds(); // TODO
             }
             catch (FileNotFoundException) 
             {
@@ -929,7 +926,7 @@ namespace RetroRoulette
             if (ImGui.BeginTable("nodetree", 3))
             {
                 ImGui.TableSetupColumn("name", ImGuiTableColumnFlags.WidthFixed | ImGuiTableColumnFlags.IndentEnable, 300); // TODO dynamic size
-                ImGui.TableSetupColumn("buttons", ImGuiTableColumnFlags.WidthFixed, 207);
+                ImGui.TableSetupColumn("buttons", ImGuiTableColumnFlags.WidthFixed, 280);
                 ImGui.TableSetupColumn("commands", ImGuiTableColumnFlags.WidthStretch);
 
                 using (StyleContext sctxNodetree = new StyleContext())
@@ -997,7 +994,7 @@ namespace RetroRoulette
 
         private static void RenderConfigTabTree(NodeConfig node, ref bool edited, GroupNodeConfig? parentNode, GroupNodeConfig rootNode)
         {
-            ImGui.PushID(node.id);
+            ImGui.PushID(node.id.ToString());
 
             bool renderChildren = false;
 
@@ -1108,6 +1105,16 @@ namespace RetroRoulette
                     RenderMenu(rootNode, ref edited);
 
                     ImGui.EndPopup();
+                }
+
+                ImGui.SameLine();
+
+                if (ImGui.Button("Duplicate"))
+                {
+                    NodeConfig clone = node.Clone();
+                    clone.id = Guid.NewGuid();
+                    parentNode.ChildNodes.Insert(parentNode.ChildNodes.IndexOf(node) + 1, clone);
+                    edited = true;
                 }
 
                 ImGui.SameLine();
